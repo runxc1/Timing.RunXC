@@ -49,7 +49,7 @@ aspire run            # from the repo root — starts Supabase stack + frontend
 
 | Service            | URL                          |
 | ------------------ | ---------------------------- |
-| App (Vite)         | http://localhost:8080        |
+| App (Vite)         | http://localhost:8088        |
 | Supabase Studio    | http://localhost:54323       |
 | Supabase API (Kong)| http://localhost:8000        |
 

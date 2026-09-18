@@ -1,6 +1,6 @@
 -- ============================================
 -- SUPABASE MIGRATIONS (auto-generated)
--- Generated at: 2026-09-18 12:20:30
+-- Generated at: 2026-09-18 16:47:38
 -- Source: C:\temp\RunXc.Timing\supabase\migrations
 -- ============================================
 

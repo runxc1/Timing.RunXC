@@ -53,7 +53,7 @@ var supabase = builder.AddSupabase("runxctiming-supabase")
 //  is launched by Aspire and pointed at the local Supabase stack above.
 // -----------------------------------------------------------------------------
 var frontend = builder.AddJavaScriptApp("runxctiming-frontend", "../..", "aspire")
-    .WithHttpEndpoint(targetPort: builder.ExecutionContext.IsPublishMode ? 80 : 8080, name: "http")
+    .WithHttpEndpoint(targetPort: builder.ExecutionContext.IsPublishMode ? 80 : 8088, name: "http")
     .WithExternalHttpEndpoints()
     .WithSupabaseVite(supabase)
     .PublishAsDockerFile()

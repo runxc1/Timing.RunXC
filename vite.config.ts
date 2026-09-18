@@ -40,7 +40,7 @@ export default defineConfig({
     }),
   ],
   server: {
-    port: 8080,
+    port: 8088,
     strictPort: true,
     watch: {
       // Local Postgres data (aspire/infra) and tooling output churn inside the
@@ -55,7 +55,7 @@ export default defineConfig({
     },
   },
   preview: {
-    port: 8080,
+    port: 8088,
     strictPort: true,
   },
   build: {
