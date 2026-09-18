@@ -1,0 +1,56 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink-950: #070c16;
+  --color-ink-900: #0b1220;
+  --color-ink-800: #131c2e;
+  --color-ink-700: #1d2a40;
+  --color-ink-600: #2c3d5a;
+  --color-brand-300: #bef264;
+  --color-brand-400: #a3e635;
+  --color-brand-500: #84cc16;
+  --color-accent-400: #22d3ee;
+  --font-display: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-display);
+  background: var(--color-ink-900);
+  color: #e2e8f0;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Giant finish-line tap button */
+.tap-button {
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.tap-button:active {
+  transform: scale(0.985);
+}
+
+/* Sticker sheet printing */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #print-area,
+  #print-area * {
+    visibility: visible;
+  }
+  #print-area {
+    position: absolute;
+    inset: 0;
+    background: white;
+    color: black;
+  }
+  @page {
+    margin: 0.5cm;
+  }
+}

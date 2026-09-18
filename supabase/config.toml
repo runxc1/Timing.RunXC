@@ -1,0 +1,4 @@
+# Minimal Supabase CLI project file — migrations live in supabase/migrations/.
+# `supabase db push` (see .github/workflows/deploy-supabase.yml or
+# scripts/publish-supabase.ps1) tracks applied migrations automatically.
+project_id = "runxctiming"

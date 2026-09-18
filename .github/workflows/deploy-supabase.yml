@@ -1,0 +1,38 @@
+# Applies supabase/migrations to a hosted Supabase project.
+# One-time setup (Settings → Secrets and variables → Actions → Secrets):
+#   SUPABASE_ACCESS_TOKEN  – dashboard → account avatar → Access tokens
+#   SUPABASE_DB_PASSWORD   – Project Settings → Database → Postgres password
+# Then run this workflow manually and enter the project ref, e.g. the "abcd"
+# part of https://supabase.com/dashboard/project/abcd/settings/api.
+name: Deploy Supabase migrations
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_ref:
+        description: Supabase project ref (from the dashboard URL)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  push-migrations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Link project and apply migrations
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          PROJECT_REF: ${{ inputs.project_ref }}
+        run: |
+          supabase login
+          supabase link --project-ref "$PROJECT_REF"
+          supabase db push

@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>timing.runXC.run</title>
+    <script>
+      // GitHub Pages SPA fallback. Pages serves this document (status 404) at
+      // whatever path was requested, so we stash the full URL and bounce to
+      // the app root; src/lib/spaFallback.ts replays it as the initial route.
+      // The app root is derived by stripping a known client route off the end
+      // of the path, which also works under user.github.io/<repo>/ URLs.
+      (function () {
+        var routes = [
+          /\/m\/races\/[^/]+\/stickers\/?$/,
+          /\/m\/races\/[^/]+\/?$/,
+          /\/[jtr]\/[^/]+\/?$/,
+          /\/m\/?$/,
+        ];
+        var base = "";
+        for (var i = 0; i < routes.length; i++) {
+          var m = window.location.pathname.match(routes[i]);
+          if (m) {
+            base = window.location.pathname.slice(0, m.index);
+            break;
+          }
+        }
+        try {
+          sessionStorage.setItem(
+            "runxc-spa-fallback-path",
+            window.location.pathname + window.location.search + window.location.hash,
+          );
+        } catch (e) {
+          /* private mode: redirect to root without deep-link restore */
+        }
+        window.location.replace(base + "/");
+      })();
+    </script>
+  </head>
+  <body style="background: #0b1220; color: #e2e8f0; font-family: system-ui, sans-serif; display: grid; place-items: center; min-height: 100vh; margin: 0">
+    <p>Redirecting to <a href="/" style="color: #7dd3fc">timing.runXC.run</a>…</p>
+  </body>
+</html>
