@@ -23,7 +23,11 @@ if (!url) {
 }
 
 export interface AuthHeaders {
-  raceCode?: string;
+  /** Meet signup code — registers athletes / claims codes. */
+  signupCode?: string;
+  /** Meet timer code — starts races and records finishes (not an admin). */
+  timerCode?: string;
+  /** Owner or delegated meet-admin code. */
   meetAdminCode?: string;
 }
 
@@ -33,8 +37,9 @@ const cache = new Map<string, SupabaseClient>();
 
 export function makeClient(headers: AuthHeaders = {}): SupabaseClient {
   const h: Record<string, string> = {};
-  if (headers.raceCode) h["X-Race-Code"] = headers.raceCode;
-  if (headers.meetAdminCode) h["X-Meet-Admin-Code"] = headers.meetAdminCode;
+  if (headers.signupCode) h["X-Signup-Code"] = headers.signupCode.toUpperCase();
+  if (headers.timerCode) h["X-Timer-Code"] = headers.timerCode.toUpperCase();
+  if (headers.meetAdminCode) h["X-Meet-Admin-Code"] = headers.meetAdminCode.toUpperCase();
   const key = JSON.stringify(h);
   let c = cache.get(key);
   if (!c) {

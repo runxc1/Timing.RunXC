@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watchEffect } from "vue";
+import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { makeClient } from "../lib/supabase";
 import { useSession } from "../stores/session";
@@ -11,12 +11,22 @@ const raceId = computed(() => String(route.params.raceId));
 
 const race = ref<{
   id: string;
+  meet_id: string;
   name: string;
-  race_code: string;
   status: string;
   scheduled_start: string | null;
   team_size: number;
   tiebreak_depth: number;
+} | null>(null);
+
+/** Codes belong to the parent meet: /j/{code} registers, /t/{timerCode} times. */
+const meet = ref<{
+  id: string;
+  name: string;
+  code: string | null;
+  signup_code: string | null;
+  timer_code: string | null;
+  registration_locked_at: string | null;
 } | null>(null);
 const athletes = ref<
   Array<{ id: string; code: string; name: string | null; grade: string | null; school_id: string | null; source: string }>
@@ -27,13 +37,14 @@ const saving = ref(false);
 const savedFlash = ref(false);
 
 const admin = computed(() => makeClient({ meetAdminCode: session.meetAdminCode || undefined }));
-const raceHdr = computed(() => makeClient({ raceCode: race.value?.race_code }));
+/** Athlete rows are inserted with the meet's signup credential (that's what RLS accepts). */
+const signup = computed(() => makeClient({ signupCode: meet.value?.signup_code ?? undefined }));
 
 async function load() {
   if (!session.meetAdminCode) return;
   const { data, error: err } = await admin.value
     .from("races")
-    .select("id, name, race_code, status, scheduled_start, team_size, tiebreak_depth")
+    .select("id, meet_id, name, status, scheduled_start, team_size, tiebreak_depth")
     .eq("id", raceId.value)
     .maybeSingle();
   if (err) {
@@ -41,21 +52,30 @@ async function load() {
     return;
   }
   race.value = data as typeof race.value;
-  if (data) {
-    session.rememberRace(data.id, data.race_code);
-    const [a, s] = await Promise.all([
-      admin.value
-        .from("athletes")
-        .select("id, code, name, grade, school_id, source")
-        .eq("race_id", raceId.value)
-        .order("code"),
-      admin.value.from("schools").select("id, name").order("name"),
-    ]);
-    athletes.value = (a.data ?? []) as typeof athletes.value;
-    schools.value = (s.data ?? []) as typeof schools.value;
-  }
+  if (!data) return;
+
+  const m = await admin.value
+    .from("meets")
+    .select("id, name, code, signup_code, timer_code, registration_locked_at")
+    .eq("id", race.value!.meet_id)
+    .maybeSingle();
+  if (m.error) error.value = m.error.message;
+  meet.value = (m.data as typeof meet.value) ?? null;
+  if (meet.value?.code) session.rememberMeet(meet.value.code);
+
+  const [a, s] = await Promise.all([
+    admin.value
+      .from("athletes")
+      .select("id, code, name, grade, school_id, source")
+      .eq("race_id", raceId.value)
+      .order("code"),
+    admin.value.from("schools").select("id, name").order("name"),
+  ]);
+  athletes.value = (a.data ?? []) as typeof athletes.value;
+  schools.value = (s.data ?? []) as typeof schools.value;
 }
-watchEffect(load);
+
+watch([raceId, () => session.meetAdminCode], load, { immediate: true });
 
 const schoolName = (id: string | null) =>
   schools.value.find((s) => s.id === id)?.name ?? "—";
@@ -97,6 +117,10 @@ const importCount = ref(10);
 const importing = ref(false);
 async function importPool() {
   if (!race.value || importing.value) return;
+  if (meet.value?.registration_locked_at) {
+    error.value = "Registration is locked for this meet, so new codes can't be created.";
+    return;
+  }
   importing.value = true;
   error.value = "";
   const rows: Array<{ race_id: string; code: string; source: string }> = [];
@@ -107,20 +131,38 @@ async function importPool() {
     existing.add(code);
     rows.push({ race_id: race.value.id, code, source: "import" });
   }
-  const { error: err } = await raceHdr.value.from("athletes").insert(rows);
+  const { error: err } = await signup.value.from("athletes").insert(rows);
   if (err) error.value = err.message;
   else await load();
   importing.value = false;
 }
 
+// --- share links -------------------------------------------------------------
+
 const regUrl = computed(() =>
-  race.value ? `${location.origin}/j/${race.value.race_code}` : "",
+  meet.value?.code ? `${window.location.origin}/j/${meet.value.code}` : "",
 );
-const copied = ref(false);
-function copyLink() {
-  navigator.clipboard.writeText(regUrl.value);
-  copied.value = true;
-  setTimeout(() => (copied.value = false), 1500);
+const timerUrl = computed(() =>
+  meet.value?.timer_code ? `${window.location.origin}/t/${meet.value.timer_code}` : "",
+);
+/** Only worth opening once two stopwatches can disagree. */
+const canCompare = computed(
+  () => race.value?.status === "running" || race.value?.status === "finalized",
+);
+
+const shareLinks = computed(() => [
+  { key: "reg", kind: "Registration", url: regUrl.value },
+  { key: "timer", kind: "Timer", url: timerUrl.value },
+]);
+
+const copiedKey = ref("");
+function copyLink(text: string, key: string) {
+  if (!text) return;
+  navigator.clipboard.writeText(text);
+  copiedKey.value = key;
+  setTimeout(() => {
+    if (copiedKey.value === key) copiedKey.value = "";
+  }, 1500);
 }
 
 function scheduledLocal(v: string | null): string {
@@ -140,12 +182,13 @@ function scheduledLocal(v: string | null): string {
           <RouterLink to="/m" class="text-xs font-bold text-slate-500 hover:text-slate-300">← Meet</RouterLink>
           <h1 class="mt-1 font-display text-2xl font-black tracking-tight">{{ race.name }}</h1>
           <p class="mt-1 text-sm text-slate-400">
-            Race code <span class="font-bold text-brand-300">{{ formatCode(race.race_code) }}</span>
+            <template v-if="meet">{{ meet.name }} · </template>meet code
+            <span class="font-bold text-brand-300">{{ meet?.code ? formatCode(meet.code) : "—" }}</span>
           </p>
         </div>
         <RouterLink
-          :to="`/t/${race.race_code}`"
-          class="rounded-xl bg-brand-400 px-4 py-2.5 text-sm font-black text-ink-950 hover:bg-brand-300"
+          :to="meet?.timer_code ? `/t/${meet.timer_code}` : '/m'"
+          class="shrink-0 rounded-xl bg-brand-400 px-4 py-2.5 text-sm font-black text-ink-950 hover:bg-brand-300"
         >
           Open console
         </RouterLink>
@@ -192,7 +235,7 @@ function scheduledLocal(v: string | null): string {
         </div>
       </section>
 
-      <!-- Status + sharing -->
+      <!-- Status -->
       <section class="mt-4 flex flex-wrap items-center gap-2">
         <button
           v-if="race.status === 'draft'"
@@ -208,16 +251,47 @@ function scheduledLocal(v: string | null): string {
         >
           Mark ready
         </button>
-        <div v-if="race.status !== 'draft'" class="flex flex-1 items-center gap-2">
-          <input
-            :value="regUrl"
-            readonly
-            class="min-w-0 flex-1 rounded-lg border border-ink-700 bg-ink-950 px-3 py-2 text-xs text-slate-300"
-            @focus="($event.target as HTMLInputElement).select()"
-          />
-          <button class="rounded-lg bg-ink-800 px-3 py-2 text-xs font-bold hover:bg-ink-700" @click="copyLink">
-            {{ copied ? "Copied ✓" : "Copy link" }}
-          </button>
+        <span
+          v-if="meet?.registration_locked_at"
+          class="rounded-full bg-violet-500/15 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-violet-300"
+        >
+          Registration locked
+        </span>
+        <RouterLink
+          v-if="canCompare"
+          :to="`/m/races/${race.id}/compare`"
+          class="ml-auto rounded-xl border border-ink-700 px-4 py-2 text-sm font-bold text-slate-200 hover:bg-ink-800"
+        >
+          Compare timings →
+        </RouterLink>
+      </section>
+
+      <!-- Sharing: every link is a meet-level link -->
+      <section v-if="race.status !== 'draft'" class="mt-4 rounded-2xl border border-ink-800 bg-ink-900 p-5">
+        <h2 class="font-bold">Share</h2>
+        <p class="text-sm text-slate-400">
+          Runners and timers both use meet-wide links — this division is picked on the next screen.
+        </p>
+        <div class="mt-3 flex flex-col gap-2">
+          <div v-for="link in shareLinks" :key="link.key"
+            class="flex items-center gap-2 rounded-xl border border-ink-800 bg-ink-950 px-3 py-2"
+          >
+            <span class="w-20 shrink-0 text-[10px] font-black uppercase tracking-wider text-slate-500">
+              {{ link.kind }}
+            </span>
+            <input
+              :value="link.url"
+              readonly
+              class="min-w-0 flex-1 bg-transparent text-xs text-slate-300 focus:outline-none"
+              @focus="($event.target as HTMLInputElement).select()"
+            />
+            <button
+              class="shrink-0 rounded-lg bg-ink-800 px-2.5 py-1 text-[11px] font-bold hover:bg-ink-700"
+              @click="copyLink(link.url, link.key)"
+            >
+              {{ copiedKey === link.key ? "Copied ✓" : "Copy" }}
+            </button>
+          </div>
         </div>
       </section>
 

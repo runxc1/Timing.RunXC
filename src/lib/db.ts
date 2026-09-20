@@ -8,7 +8,8 @@ import Dexie, { type Table } from "dexie";
 
 export interface OutboxItem {
   id: string;
-  race_code: string;
+  /** Meet timer code that authorizes this write (X-Timer-Code). */
+  auth_code: string;
   table: "races" | "athletes" | "finish_slots";
   op: "insert" | "update" | "delete";
   /** Server row id (client-generated UUID for inserts). */
@@ -24,7 +25,6 @@ export interface OutboxItem {
 export interface MirrorRace {
   id: string;
   meet_id?: string;
-  race_code?: string;
   name?: string;
   status?: string;
   scheduled_start?: string | null;
@@ -59,6 +59,20 @@ export interface MirrorSlot {
   raw?: unknown;
 }
 
+/**
+ * A backup stopwatch tap held locally until the record_timer_slot RPC can
+ * carry it to the server (backup devices never write official finish_slots).
+ */
+export interface BackupTap {
+  id: string;
+  race_id: string;
+  auth_code: string;
+  t0_offset_ms: number;
+  captured_at: number;
+  /** IndexedDB cannot index booleans: 0 = queued, 1 = uploaded. */
+  sent: 0 | 1;
+}
+
 /** Stable per-device id used to attribute finish slots. */
 export function deviceId(): string {
   let id = localStorage.getItem("runxc-device-id");
@@ -74,6 +88,7 @@ class TimingDB extends Dexie {
   races!: Table<MirrorRace, string>;
   athletes!: Table<MirrorAthlete, string>;
   finish_slots!: Table<MirrorSlot, string>;
+  backup_taps!: Table<BackupTap, string>;
 
   constructor() {
     super("runxc-timing");
@@ -86,6 +101,29 @@ class TimingDB extends Dexie {
     this.version(2).stores({
       outbox: "id, race_code, created_at, row_id",
     });
+    // Meet-level timer codes replace per-race codes; queued writes from the
+    // old scheme cannot be authorized anymore, so start the queue clean.
+    this.version(3)
+      .stores({
+        outbox: "id, auth_code, created_at, row_id",
+        races: "id",
+        backup_taps: "id, race_id, captured_at",
+      })
+      .upgrade((tx) => tx.table("outbox").clear());
+    // v3's schema was revised while in development; re-declare it as v4 so any
+    // browser that caught the earlier draft upgrades cleanly. Production users
+    // (v1/v2) see no-op index changes here.
+    this.version(4).stores({
+      outbox: "id, auth_code, created_at, row_id",
+      races: "id",
+      athletes: "id, race_id, code",
+      finish_slots: "id, race_id, seq, athlete_id",
+      backup_taps: "id, race_id, captured_at",
+    });
+    // Needed to find queued-but-unsent backup taps during flush.
+    this.version(5).stores({
+      backup_taps: "id, race_id, captured_at, sent",
+    });
   }
 }
 
@@ -97,7 +135,7 @@ export function uuid(): string {
 
 /** Queue a write and optimistically apply it to the mirror. */
 export async function enqueueWrite(opts: {
-  raceCode: string;
+  timerCode: string;
   table: OutboxItem["table"];
   op: OutboxItem["op"];
   rowId: string;
@@ -107,7 +145,7 @@ export async function enqueueWrite(opts: {
   await db.transaction("rw", db.outbox, db[opts.table], async () => {
     await db.outbox.add({
       id: uuid(),
-      race_code: opts.raceCode.toUpperCase(),
+      auth_code: opts.timerCode.toUpperCase(),
       table: opts.table,
       op: opts.op,
       row_id: opts.rowId,

@@ -1,13 +1,12 @@
 import { defineStore } from "pinia";
 import { ref, watch } from "vue";
 
-const KEY = "runxc-session-v1";
+const KEY = "runxc-session-v2";
 
 interface Persisted {
   meetAdminCode?: string;
-  /** raceId -> race code, remembered for console/results shortcuts. */
-  raceCodes?: Record<string, string>;
-  lastRaceId?: string;
+  /** Public meet code (results/registration links), remembered for shortcuts. */
+  lastMeetCode?: string;
 }
 
 function load(): Persisted {
@@ -21,35 +20,31 @@ function load(): Persisted {
 export const useSession = defineStore("session", () => {
   const persisted = load();
   const meetAdminCode = ref(persisted.meetAdminCode ?? "");
-  const raceCodes = ref<Record<string, string>>(persisted.raceCodes ?? {});
-  const lastRaceId = ref(persisted.lastRaceId ?? "");
+  const lastMeetCode = ref(persisted.lastMeetCode ?? "");
   const pendingCount = ref(0);
 
   watch(
-    [meetAdminCode, raceCodes, lastRaceId],
+    [meetAdminCode, lastMeetCode],
     () => {
       localStorage.setItem(
         KEY,
         JSON.stringify({
           meetAdminCode: meetAdminCode.value,
-          raceCodes: raceCodes.value,
-          lastRaceId: lastRaceId.value,
+          lastMeetCode: lastMeetCode.value,
         } satisfies Persisted),
       );
     },
     { deep: true },
   );
 
-  function rememberRace(raceId: string, code: string) {
-    raceCodes.value[raceId] = code.toUpperCase();
-    lastRaceId.value = raceId;
+  function rememberMeet(meetCode: string) {
+    lastMeetCode.value = meetCode.toUpperCase();
   }
 
   function forgetMeet() {
     meetAdminCode.value = "";
-    raceCodes.value = {};
-    lastRaceId.value = "";
+    lastMeetCode.value = "";
   }
 
-  return { meetAdminCode, raceCodes, lastRaceId, pendingCount, rememberRace, forgetMeet };
+  return { meetAdminCode, lastMeetCode, pendingCount, rememberMeet, forgetMeet };
 });

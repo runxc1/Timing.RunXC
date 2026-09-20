@@ -3,91 +3,206 @@ import { computed, ref, watchEffect } from "vue";
 import { useRoute } from "vue-router";
 import QRCode from "qrcode";
 import { supabase, makeClient } from "../lib/supabase";
-import { isValidCode, normalizeCode, formatCode } from "../lib/codes";
+import { normalizeCode, formatCode } from "../lib/codes";
+
+interface Division {
+  id: string;
+  name: string;
+  status: string;
+  starts_at: string | null;
+}
+
+interface Meet {
+  id: string;
+  name: string;
+  location: string | null;
+  meet_date: string | null;
+  registration_locked: boolean;
+  divisions: Division[];
+}
 
 const route = useRoute();
-const raceCode = computed(() => normalizeCode(String(route.params.raceCode)));
+const meetCode = computed(() => normalizeCode(String(route.params.meetCode ?? "")));
+/** Last signup code this device used for this meet. */
+const storageKey = computed(() => `runxc-signup-${meetCode.value}`);
 
-const race = ref<{ id: string; name: string; status: string } | null>(null);
-const schools = ref<Array<{ id: string; name: string }>>([]);
+const meet = ref<Meet | null>(null);
 const loadError = ref("");
+const schools = ref<Array<{ id: string; name: string }>>([]);
 
+const raceId = ref("");
 const name = ref("");
 const schoolId = ref("");
 const grade = ref("");
-const code = ref("");
-const hasCode = ref(false);
+const signupCode = ref("");
+const athleteCode = ref("");
+
 const busy = ref(false);
 const error = ref("");
-const done = ref<{ code: string; name: string } | null>(null);
+const done = ref<{ code: string; name: string; raceName: string } | null>(null);
 const doneQr = ref("");
+const copied = ref(false);
 
-const GRADES = ["9", "10", "11", "12", "U8", "U10", "U12", "U14", "Masters"];
+const GRADES = ["9", "10", "11", "12"];
 
-/** Registration is over, but a code recorded at the finish line stays claimable. */
-const closed = computed(
-  () => race.value?.status === "running" || race.value?.status === "finalized",
-);
-const claiming = computed(() => closed.value && hasCode.value);
+/** Backend error codes -> human copy, shown inline next to the form. */
+const ERROR_MESSAGES: Record<string, string> = {
+  MEET_NOT_FOUND: "We couldn't find that meet. Check the link from your meet organizer.",
+  SIGNUP_CODE_INVALID:
+    "That signup code doesn't match this meet. It's printed on the meet flyer — ask your coach or the timing tent.",
+  REGISTRATION_LOCKED:
+    "This meet has been finalized, so registration is closed. Results are posted on the results page.",
+  DIVISION_NOT_FOUND: "Pick the division you're racing in.",
+  DIVISION_NOT_OPEN:
+    "That division isn't open yet — it will appear on the timing tent screen when the race is up.",
+  NAME_REQUIRED: "Please enter your name.",
+  CODE_TAKEN:
+    "That athlete code already belongs to another runner. Leave it blank and we'll assign you a new one.",
+  CODE_LENGTH: "Athlete codes are exactly 6 characters — or leave it blank and we'll assign one.",
+};
+
+function messageFor(raw: string | undefined, fallback: string): string {
+  const msg = raw ?? "";
+  const key = Object.keys(ERROR_MESSAGES).find((k) => msg.includes(k));
+  return key ? ERROR_MESSAGES[key] : msg || fallback;
+}
+
+function readStoredSignupCode(): string {
+  try {
+    return localStorage.getItem(storageKey.value) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function rememberSignupCode(code: string) {
+  try {
+    localStorage.setItem(storageKey.value, code);
+  } catch {
+    /* private mode / storage disabled — prefill is a nicety, not a requirement */
+  }
+}
 
 watchEffect(async () => {
-  race.value = null;
+  const code = meetCode.value;
+  meet.value = null;
   loadError.value = "";
-  if (!isValidCode(raceCode.value)) {
-    loadError.value = "That race code doesn't look right.";
+  error.value = "";
+  if (!code) {
+    loadError.value = ERROR_MESSAGES.MEET_NOT_FOUND;
     return;
   }
-  const { data, error: err } = await supabase
-    .from("races")
-    .select("id, name, status")
-    .eq("race_code", raceCode.value)
-    .maybeSingle();
+  const { data, error: err } = await supabase.rpc("get_meet", { p_code: code });
   if (err) {
-    loadError.value = err.message;
+    loadError.value = messageFor(err.message, "We couldn't load that meet right now. Check your connection.");
     return;
   }
-  if (!data) {
-    loadError.value = "No race found with that code.";
+  const m = data as Meet | null;
+  if (!m) {
+    loadError.value = ERROR_MESSAGES.MEET_NOT_FOUND;
     return;
   }
-  race.value = data as { id: string; name: string; status: string };
+  meet.value = m;
+  // Keep the runner's pick when it survives a reload; otherwise land on a division
+  // they can actually still join (in progress first, then one that hasn't started).
+  if (!m.divisions.some((d) => d.id === raceId.value)) {
+    raceId.value =
+      m.divisions.find((d) => d.status === "running")?.id ??
+      m.divisions.find((d) => d.status === "ready")?.id ??
+      (m.divisions[0]?.id ?? "");
+  }
+  if (!signupCode.value) signupCode.value = readStoredSignupCode();
+
   const s = await supabase
     .from("schools")
     .select("id, name")
-    .eq("meet_id", (await supabase.from("races").select("meet_id").eq("id", data.id).single()).data!.meet_id)
+    .eq("meet_id", m.id)
     .order("name");
-  schools.value = (s.data ?? []) as typeof schools.value;
+  schools.value = (s.data ?? []) as Array<{ id: string; name: string }>;
 });
 
-const errorMessages: Record<string, string> = {
-  RACE_NOT_FOUND: "No race found with that code.",
-  REGISTRATION_CLOSED: "Registration for this race is closed.",
-  NAME_REQUIRED: "Please enter your name.",
-  CODE_TAKEN: "That code is already claimed by another runner.",
-  CODE_LENGTH: "Codes are exactly 6 characters.",
-};
+const selectedDivision = computed(
+  () => meet.value?.divisions.find((d) => d.id === raceId.value) ?? null,
+);
+
+function divisionLabel(d: Division): string {
+  if (d.status === "running") return `${d.name} — race in progress (you can still register)`;
+  const when = startTimeLabel(d.starts_at);
+  return when ? `${d.name} · ${when}` : d.name;
+}
+
+function startTimeLabel(iso: string | null): string {
+  if (!iso) return "";
+  return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+const meetDateLabel = computed(() => {
+  const raw = meet.value?.meet_date;
+  if (!raw) return "";
+  const [y, mo, d] = String(raw).split("-").map(Number);
+  if (!y || !mo || !d) return String(raw);
+  return new Date(y, mo - 1, d).toLocaleDateString([], {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+});
 
 async function submit() {
   if (busy.value) return;
-  busy.value = true;
   error.value = "";
-  const client = makeClient({ raceCode: raceCode.value });
-  const { data, error: err } = await client.rpc("join_race", {
-    p_race_code: raceCode.value,
+  const code = normalizeCode(signupCode.value);
+  const claimedCode = normalizeCode(athleteCode.value);
+  if (!raceId.value) {
+    error.value = ERROR_MESSAGES.DIVISION_NOT_FOUND;
+    return;
+  }
+  if (!code) {
+    error.value = ERROR_MESSAGES.SIGNUP_CODE_INVALID;
+    return;
+  }
+  signupCode.value = code;
+
+  busy.value = true;
+  const client = makeClient({ signupCode: code });
+  const { data, error: err } = await client.rpc("join_meet", {
+    p_signup_code: code,
+    p_race_id: raceId.value,
     p_name: name.value.trim(),
     p_school_id: schoolId.value || null,
     p_grade: grade.value || null,
-    p_code: hasCode.value ? normalizeCode(code.value) : null,
+    p_code: claimedCode || null,
   });
   busy.value = false;
+
   if (err) {
-    const key = Object.keys(errorMessages).find((k) => err.message.includes(k));
-    error.value = key ? errorMessages[key] : err.message;
+    error.value = messageFor(err.message, "Something went wrong. Try again.");
     return;
   }
-  const d = data as { code: string };
-  done.value = { code: d.code, name: name.value.trim() };
-  doneQr.value = await QRCode.toDataURL(d.code, { margin: 1, width: 240 });
+  const d = data as { code: string; race_name: string };
+  rememberSignupCode(code);
+  doneQr.value = await QRCode.toDataURL(d.code, { margin: 1, width: 240 }).catch(() => "");
+  done.value = { code: d.code, name: name.value.trim(), raceName: d.race_name };
+}
+
+function resetForNextRunner() {
+  done.value = null;
+  doneQr.value = "";
+  copied.value = false;
+  name.value = "";
+  grade.value = "";
+  athleteCode.value = "";
+}
+
+async function copyCode() {
+  if (!done.value) return;
+  try {
+    await navigator.clipboard.writeText(done.value.code);
+    copied.value = true;
+    setTimeout(() => (copied.value = false), 2000);
+  } catch {
+    /* clipboard blocked — the code is on screen anyway */
+  }
 }
 </script>
 
@@ -95,125 +210,202 @@ async function submit() {
   <main class="mx-auto flex min-h-screen max-w-md flex-col justify-center px-5 py-10">
     <!-- Success -->
     <div v-if="done" class="text-center">
-      <div class="mx-auto grid size-14 place-items-center rounded-full bg-brand-400 text-3xl font-black text-ink-950">✓</div>
-      <h1 class="mt-4 font-display text-2xl font-black">
-        {{ claiming ? "Result claimed," : "You're in," }} {{ done.name }}!
-      </h1>
-      <p v-if="claiming" class="mt-2 text-sm text-slate-400">
-        Your name, school and grade are now attached to this code in the results and team scores.
-      </p>
-      <p v-else class="mt-2 text-sm text-slate-400">
-        This is your finish-line code. Screenshot it — you'll show it (or type it)
-        when you cross the line.
-      </p>
-      <div class="mx-auto mt-6 w-64 rounded-2xl border border-ink-700 bg-white p-4">
-        <img v-if="doneQr" :src="doneQr" alt="Your QR code" class="mx-auto size-48" />
-        <p class="mt-2 text-center font-display text-3xl font-black tracking-[0.25em] text-black">
+      <div
+        class="mx-auto grid size-14 place-items-center rounded-full bg-brand-400 text-3xl font-black text-ink-950"
+      >
+        ✓
+      </div>
+      <h1 class="mt-4 font-display text-2xl font-black">You're in, {{ done.name }}!</h1>
+      <p class="mt-1 text-sm font-bold uppercase tracking-wider text-brand-300">{{ done.raceName }}</p>
+
+      <div class="mt-6 rounded-2xl border border-ink-700 bg-ink-950 px-4 py-6">
+        <p class="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-500">Your athlete code</p>
+        <p class="mt-2 font-mono text-5xl font-black tracking-widest text-brand-300">
           {{ formatCode(done.code) }}
         </p>
+        <img v-if="doneQr" :src="doneQr" alt="Your QR code" class="mx-auto mt-4 size-40 rounded-lg" />
       </div>
-      <button
-        class="mt-6 rounded-xl bg-ink-800 px-5 py-2.5 text-sm font-bold text-slate-200 hover:bg-ink-700"
-        @click="done = null; name = ''; code = ''"
-      >
-        Register another runner
-      </button>
+
+      <p class="mt-4 text-sm font-semibold text-slate-300">Show this code at the finish line.</p>
+      <p class="mt-1 text-xs text-slate-500">
+        Screenshot it. The timer scans or types it as you cross — that's what puts your name in the results.
+      </p>
+
+      <div class="mt-6 flex flex-col gap-2">
+        <button
+          class="rounded-xl bg-brand-400 py-3 text-sm font-black text-ink-950 transition hover:bg-brand-300"
+          @click="resetForNextRunner"
+        >
+          Register another runner
+        </button>
+        <button
+          class="rounded-xl border border-ink-700 px-5 py-2.5 text-sm font-bold text-slate-300 transition hover:bg-ink-800"
+          @click="copyCode"
+        >
+          {{ copied ? "Copied!" : "Copy code" }}
+        </button>
+      </div>
     </div>
 
-    <!-- Form -->
+    <!-- Load error -->
+    <p v-else-if="loadError" class="rounded-2xl border border-ink-800 bg-ink-900 px-4 py-4 text-sm text-slate-300">
+      {{ loadError }}
+      <RouterLink to="/" class="mt-3 block text-sm font-bold text-brand-300 hover:text-brand-400">
+        ← Back to timing.runXC.run
+      </RouterLink>
+    </p>
+
+    <div v-else-if="!meet" class="text-sm text-slate-400">Loading meet…</div>
+
+    <!-- Meet found -->
     <template v-else>
-      <p v-if="loadError" class="rounded-xl bg-red-500/10 px-4 py-3 text-sm text-red-300">{{ loadError }}</p>
-      <template v-else-if="race">
-        <h1 class="font-display text-3xl font-black tracking-tight">
-          <span class="text-brand-400">Enter</span> {{ race.name }}
-        </h1>
+      <header>
+        <p class="text-xs font-black uppercase tracking-[0.3em] text-brand-400">Athlete registration</p>
+        <h1 class="mt-1 font-display text-3xl font-black leading-tight tracking-tight">{{ meet.name }}</h1>
         <p class="mt-1 text-sm text-slate-400">
-          Race <span class="font-bold text-brand-300">{{ formatCode(raceCode) }}</span>
-          <template v-if="race.status === 'draft'"> · registration opens soon</template>
-          <template v-else-if="race.status === 'running' || race.status === 'finalized'"> · registration closed</template>
+          <span v-if="meet.location">{{ meet.location }}</span>
+          <span v-if="meet.location && meetDateLabel"> · </span>
+          <span>{{ meetDateLabel }}</span>
         </p>
+      </header>
 
-        <div
-          v-if="closed"
-          class="mt-4 rounded-xl border border-amber-400/40 bg-amber-400/10 p-4 text-sm text-amber-200"
+      <!-- Meet finalized -->
+      <div
+        v-if="meet.registration_locked"
+        class="mt-6 rounded-2xl border border-amber-400/40 bg-amber-400/10 p-5"
+      >
+        <p class="font-display text-lg font-black text-amber-200">Registration is closed</p>
+        <p class="mt-1 text-sm text-amber-100/80">
+          This meet has been finalized, so no more runners can be added or claimed.
+        </p>
+        <RouterLink
+          :to="`/r/${meetCode}`"
+          class="mt-4 inline-block rounded-xl bg-brand-400 px-5 py-2.5 text-sm font-black text-ink-950 transition hover:bg-brand-300"
         >
-          <template v-if="hasCode">
-            Enter the code the finish line recorded for you to attach your name, school and grade
-            to your result.
-          </template>
-          <template v-else>
-            Registration is closed. If you finished with an unregistered code, tick the box below
-            and enter it to claim your result.
-          </template>
-        </div>
+          See results
+        </RouterLink>
+      </div>
 
-        <form class="mt-6 flex flex-col gap-4" @submit.prevent="submit">
-          <label class="block">
-            <span class="text-xs font-bold uppercase tracking-wider text-slate-400">Full name</span>
-            <input
-              v-model="name"
-              required
-              maxlength="120"
-              autocomplete="name"
-              placeholder="Jordan Alvarez"
-              class="mt-1.5 w-full rounded-xl border border-ink-700 bg-ink-950 px-4 py-3 text-base focus:border-brand-400 focus:outline-none"
-            />
-          </label>
+      <div
+        v-else-if="meet.divisions.length === 0"
+        class="mt-6 rounded-2xl border border-ink-800 bg-ink-900 p-5 text-sm text-slate-400"
+      >
+        No divisions are open yet. Check back at the meet — the timing tent posts the link as soon as the
+        first division is ready.
+      </div>
 
+      <!-- Form -->
+      <form v-else class="mt-6 flex flex-col gap-4" @submit.prevent="submit">
+        <label class="block">
+          <span class="text-xs font-bold uppercase tracking-wider text-slate-400">Division</span>
+          <select
+            v-model="raceId"
+            required
+            class="mt-1.5 w-full rounded-xl border border-ink-700 bg-ink-950 px-4 py-3 text-base focus:border-brand-400 focus:outline-none"
+          >
+            <option v-for="d in meet.divisions" :key="d.id" :value="d.id">{{ divisionLabel(d) }}</option>
+          </select>
+          <span
+            v-if="selectedDivision?.status === 'running'"
+            class="mt-1.5 block text-xs text-amber-300"
+          >
+            This race is being timed right now — register anyway, then show your code at the line.
+          </span>
+        </label>
+
+        <label class="block">
+          <span class="text-xs font-bold uppercase tracking-wider text-slate-400">Full name</span>
+          <input
+            v-model="name"
+            required
+            maxlength="120"
+            autocomplete="name"
+            placeholder="Jordan Alvarez"
+            class="mt-1.5 w-full rounded-xl border border-ink-700 bg-ink-950 px-4 py-3 text-base focus:border-brand-400 focus:outline-none"
+          />
+        </label>
+
+        <div class="grid grid-cols-[1fr_7.5rem] gap-3">
           <label class="block">
-            <span class="text-xs font-bold uppercase tracking-wider text-slate-400">School</span>
+            <span class="text-xs font-bold uppercase tracking-wider text-slate-400">
+              School <span class="normal-case text-slate-600">(optional)</span>
+            </span>
             <select
               v-model="schoolId"
-              :required="schools.length > 0"
               class="mt-1.5 w-full rounded-xl border border-ink-700 bg-ink-950 px-4 py-3 text-base focus:border-brand-400 focus:outline-none"
             >
-              <option value="" disabled>Select your school…</option>
+              <option value="">—</option>
               <option v-for="s in schools" :key="s.id" :value="s.id">{{ s.name }}</option>
             </select>
           </label>
 
           <label class="block">
-            <span class="text-xs font-bold uppercase tracking-wider text-slate-400">Grade</span>
+            <span class="text-xs font-bold uppercase tracking-wider text-slate-400">
+              Grade <span class="normal-case text-slate-600">(opt)</span>
+            </span>
             <select
               v-model="grade"
               class="mt-1.5 w-full rounded-xl border border-ink-700 bg-ink-950 px-4 py-3 text-base focus:border-brand-400 focus:outline-none"
             >
-              <option value="" disabled>Select grade…</option>
+              <option value="">—</option>
               <option v-for="g in GRADES" :key="g" :value="g">{{ g }}</option>
             </select>
           </label>
+        </div>
 
-          <div class="rounded-xl border border-ink-800 bg-ink-900 p-4">
-            <label class="flex items-center gap-3 text-sm font-bold text-slate-200">
-              <input v-model="hasCode" type="checkbox" class="accent-lime-400" />
-              I already have a code (sticker or from my coach)
-            </label>
-            <input
-              v-if="hasCode"
-              v-model="code"
-              autocapitalize="characters"
-              autocomplete="off"
-              maxlength="7"
-              placeholder="234 567"
-              class="mt-3 w-full rounded-xl border border-ink-700 bg-ink-950 px-4 py-3 text-center font-display text-2xl font-bold tracking-[0.3em] text-brand-300 placeholder:text-ink-700 focus:border-brand-400 focus:outline-none"
-            />
-            <p v-else class="mt-2 text-xs text-slate-500">
-              No code? We'll assign you one when you register.
-            </p>
-          </div>
+        <label class="block">
+          <span class="text-xs font-bold uppercase tracking-wider text-slate-400">Meet signup code</span>
+          <input
+            v-model="signupCode"
+            required
+            @blur="signupCode = normalizeCode(signupCode)"
+            autocapitalize="characters"
+            autocomplete="off"
+            spellcheck="false"
+            maxlength="10"
+            placeholder="XXXXXX"
+            class="mt-1.5 w-full rounded-xl border border-ink-700 bg-ink-950 px-4 py-3 font-mono text-lg font-bold uppercase tracking-[0.3em] text-brand-300 placeholder:text-ink-600 focus:border-brand-400 focus:outline-none"
+          />
+          <span class="mt-1.5 block text-xs text-slate-500">
+            The code your meet organizer shares so only your runners can enter.
+          </span>
+        </label>
 
-          <p v-if="error" class="rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-300">{{ error }}</p>
+        <label class="block">
+          <span class="text-xs font-bold uppercase tracking-wider text-slate-400">Athlete code</span>
+          <input
+            v-model="athleteCode"
+            @blur="athleteCode = normalizeCode(athleteCode)"
+            autocapitalize="characters"
+            autocomplete="off"
+            spellcheck="false"
+            maxlength="7"
+            placeholder="··· ···"
+            class="mt-1.5 w-full rounded-xl border border-ink-700 bg-ink-950 px-4 py-3 text-center font-mono text-2xl font-bold uppercase tracking-[0.3em] text-brand-300 placeholder:text-ink-600 focus:border-brand-400 focus:outline-none"
+          />
+          <span class="mt-1.5 block text-xs text-slate-500">
+            Leave blank to be assigned a new code. Type the code from your card or QR if you have one — that
+            claims the finish already recorded for it.
+          </span>
+        </label>
 
-          <button
-            type="submit"
-            :disabled="busy || (closed && !hasCode)"
-            class="rounded-xl bg-brand-400 py-4 text-lg font-black text-ink-950 transition hover:bg-brand-300 disabled:opacity-50"
-          >
-            {{ busy ? (claiming ? "Claiming…" : "Registering…") : claiming ? "Claim my result" : "Register" }}
-          </button>
-        </form>
-      </template>
-      <p v-else class="text-sm text-slate-400">Loading race…</p>
+        <p v-if="error" class="rounded-xl bg-red-500/10 px-4 py-3 text-sm text-red-300">{{ error }}</p>
+
+        <button
+          type="submit"
+          :disabled="busy"
+          class="rounded-xl bg-brand-400 py-4 text-lg font-black text-ink-950 transition hover:bg-brand-300 disabled:opacity-50"
+        >
+          {{ busy ? "Registering…" : "Register" }}
+        </button>
+
+        <p class="text-center text-xs text-slate-600">
+          Live results:
+          <RouterLink :to="`/r/${meetCode}`" class="font-bold text-brand-300 hover:text-brand-400">
+            /r/{{ meetCode }}
+          </RouterLink>
+        </p>
+      </form>
     </template>
   </main>
 </template>

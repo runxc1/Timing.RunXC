@@ -1,5 +1,5 @@
 import { ref } from "vue";
-import { db, type OutboxItem } from "./db";
+import { db, deviceId, uuid, type BackupTap, type OutboxItem } from "./db";
 import { makeClient } from "./supabase";
 
 /**
@@ -45,9 +45,49 @@ export function queueFlush(): void {
 
 async function refreshPendingCount(): Promise<void> {
   const all = await db.outbox.toArray();
-  pendingCount.value = all.filter((i) => !i.parked).length;
+  const taps = await db.backup_taps.where("sent").equals(0).count().catch(() => 0);
+  pendingCount.value = all.filter((i) => !i.parked).length + taps;
   parkedCount.value = all.filter((i) => !!i.parked).length;
 }
+
+// ---------------------------------------------------------------------------
+// Backup stopwatch taps (timer devices that are NOT the primary clock)
+// ---------------------------------------------------------------------------
+
+/** Store a backup tap locally and queue its upload via record_timer_slot. */
+export async function addBackupTap(raceId: string, timerCode: string, offsetMs: number): Promise<void> {
+  await db.backup_taps.add({
+    id: uuid(),
+    race_id: raceId,
+    auth_code: timerCode.toUpperCase(),
+    t0_offset_ms: offsetMs,
+    captured_at: Date.now(),
+    sent: 0,
+  });
+  queueFlush();
+}
+
+async function flushBackupTaps(): Promise<boolean> {
+  let tap: BackupTap | undefined;
+  while ((tap = await db.backup_taps.where("sent").equals(0).sortBy("captured_at").then((l) => l[0]))) {
+    if (!navigator.onLine) return false;
+    const client = makeClient({ timerCode: tap.auth_code });
+    const { error } = await client.rpc("record_timer_slot", {
+      p_race_id: tap.race_id,
+      p_device_id: deviceId(),
+      p_t0_offset_ms: tap.t0_offset_ms,
+    });
+    if (error) {
+      // Timer row missing or auth problem — leave it queued and stop; the
+      // console surfaces this via the pending counter.
+      console.warn("backup tap push failed", error.message);
+      return false;
+    }
+    await db.backup_taps.update(tap.id, { sent: 1 });
+  }
+  return true;
+}
+
 
 async function flush(): Promise<void> {
   flushing = true;
@@ -60,6 +100,7 @@ async function flush(): Promise<void> {
       const ok = await pushItem(item);
       if (!ok) break; // offline or hard failure — retry on next queue
     }
+    await flushBackupTaps();
   } finally {
     flushing = false;
     syncing.value = false;
@@ -73,7 +114,7 @@ async function flush(): Promise<void> {
 
 async function pushItem(item: OutboxItem): Promise<boolean> {
   if (!navigator.onLine) return false;
-  const client = makeClient({ raceCode: item.race_code });
+  const client = makeClient({ timerCode: item.auth_code });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let res: { error: { code?: string; message?: string } | null };
   try {
@@ -135,7 +176,7 @@ async function tryRenumberSeq(item: OutboxItem): Promise<boolean> {
   }
   const raceId = (item.payload as { race_id?: string }).race_id;
   if (!raceId) return false;
-  const client = makeClient({ raceCode: item.race_code });
+  const client = makeClient({ timerCode: item.auth_code });
   const { data, error } = await client
     .from("finish_slots")
     .select("seq")
@@ -153,12 +194,16 @@ async function tryRenumberSeq(item: OutboxItem): Promise<boolean> {
 }
 
 /** Subscribe realtime for a race; merges server rows into the local mirror. */
-export function subscribeRace(raceId: string, raceCode: string): () => void {
+export function subscribeRace(
+  raceId: string,
+  timerCode: string,
+  meetId?: string,
+): () => void {
   const key = raceId;
   if (raceSubs.has(key)) return raceSubs.get(key)!;
 
-  const client = makeClient({ raceCode });
-  const channel = client
+  const client = makeClient({ timerCode });
+  let channel = client
     .channel(`race-${raceId}`)
     .on(
       "postgres_changes",
@@ -174,8 +219,17 @@ export function subscribeRace(raceId: string, raceCode: string): () => void {
       "postgres_changes",
       { event: "*", schema: "public", table: "races", filter: `id=eq.${raceId}` },
       (msg) => void mergeChange("races", msg.eventType, msg.new, msg.old),
-    )
-    .subscribe();
+    );
+  if (meetId) {
+    // Whole-meet race rows so division tabs show live status/clock for races
+    // that are not currently selected.
+    channel = channel.on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "races", filter: `meet_id=eq.${meetId}` },
+      (msg) => void mergeChange("races", msg.eventType, msg.new, msg.old),
+    );
+  }
+  channel = channel.subscribe();
 
   const unsub = () => {
     void client.removeChannel(channel);
@@ -183,6 +237,35 @@ export function subscribeRace(raceId: string, raceCode: string): () => void {
   };
   raceSubs.set(key, unsub);
   return unsub;
+}
+
+/**
+ * Live feed of backup stopwatch events + timer roles for the comparison
+ * screen (needs a meet-admin code — raw backup taps are admin-only).
+ */
+export function subscribeTimerEvents(
+  raceId: string,
+  meetAdminCode: string,
+  onChange: () => void,
+): () => void {
+  const client = makeClient({ meetAdminCode });
+  const channel = client
+    .channel(`timer-events-${raceId}`)
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "timer_slots" },
+      (msg) => {
+        void msg;
+        onChange();
+      },
+    )
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "race_timers", filter: `race_id=eq.${raceId}` },
+      () => onChange(),
+    )
+    .subscribe();
+  return () => void client.removeChannel(channel);
 }
 
 type MirrorTable = "races" | "athletes" | "finish_slots";
@@ -217,12 +300,22 @@ async function mergeRow(
   await db[table].put({ ...row, raw: row } as never);
 }
 
+/** Mirror every race row of a meet (division tab statuses/clocks). */
+export async function pullMeetRaces(meetId: string): Promise<void> {
+  const { data } = await supabaseRead().from("races").select("*").eq("meet_id", meetId);
+  for (const r of data ?? []) await mergeRow("races", r as Record<string, unknown>);
+}
+
+function supabaseRead() {
+  return makeClient();
+}
+
 /** Pull current server state for a race into the mirror (on console load). */
 export async function pullRace(
   raceId: string,
-  raceCode: string,
+  timerCode: string,
 ): Promise<void> {
-  const client = makeClient({ raceCode });
+  const client = makeClient({ timerCode });
   const [races, athletes, slots] = await Promise.all([
     client.from("races").select("*").eq("id", raceId).maybeSingle(),
     client.from("athletes").select("*").eq("race_id", raceId),
