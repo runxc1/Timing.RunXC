@@ -25,10 +25,15 @@ export const router = createRouter({
       component: () => import("./views/Stickers.vue"),
     },
     {
-      path: "/j/:meetCode",
+      path: "/signup/:meetCode",
       name: "register",
       component: () => import("./views/Register.vue"),
       meta: { hideChrome: true },
+    },
+    {
+      // Older printed links used /j/<code>.
+      path: "/j/:meetCode",
+      redirect: (to) => `/signup/${to.params.meetCode}`,
     },
     {
       path: "/t/:timerCode",

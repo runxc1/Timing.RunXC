@@ -26,7 +26,7 @@ function go(path: string) {
 }
 
 function openRegister() {
-  if (meetReady.value) go(`/j/${meetCode.value}`);
+  if (meetReady.value) go(`/signup/${meetCode.value}`);
 }
 function openResults() {
   if (meetReady.value) go(`/r/${meetCode.value}`);
@@ -38,7 +38,7 @@ function openTimer() {
 function useLastMeet(target: "register" | "results") {
   const c = normalizeCode(lastMeet.value ?? "");
   if (!SHAPE.test(c)) return;
-  go(target === "register" ? `/j/${c}` : `/r/${c}`);
+  go(target === "register" ? `/signup/${c}` : `/r/${c}`);
 }
 </script>
 

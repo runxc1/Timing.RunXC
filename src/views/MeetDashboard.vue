@@ -17,7 +17,7 @@ interface MeetInfo {
   id: string;
   name: string;
   admin_code: string;
-  /** Public code behind /j/ and /r/ links. */
+  /** Public code behind /signup/ and /r/ links. */
   code: string | null;
   signup_code: string | null;
   timer_code: string | null;
@@ -349,7 +349,7 @@ const shareLinks = computed<ShareLink[]>(() => {
   const o = window.location.origin;
   const out: ShareLink[] = [];
   if (m.code) {
-    out.push({ key: "register", kind: "Registration", url: `${o}/j/${m.code}` });
+    out.push({ key: "register", kind: "Registration", url: `${o}/signup/${m.code}` });
     out.push({ key: "results", kind: "Results", url: `${o}/r/${m.code}` });
   }
   if (m.timer_code) out.push({ key: "timer", kind: "Timer", url: `${o}/t/${m.timer_code}` });

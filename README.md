@@ -12,7 +12,7 @@ free tier. No custom server.
 
 - **Meet & race setup** — create a meet (admin code) and races, each with a short
   6-character race code for registration, timing, and results links.
-- **Self-service registration** — athletes at `…/j/<CODE>` enter name, school
+- **Self-service registration** — athletes at `…/signup/<CODE>` enter name, school
   (dropdown) and grade. Optionally pre-assign codes and print QR stickers.
 - **QR sticker sheets** — client-side QR generation, print-ready sheet
   (`…/m/races/<id>/stickers`), one sticker per athlete code.
@@ -182,6 +182,6 @@ aspire/               AppHost (aspire.love) + local Supabase infra config
 | `/m`                         | Meet dashboard (admin code)    |
 | `/m/races/:raceId`           | Race setup                     |
 | `/m/races/:raceId/stickers`  | Print QR stickers              |
-| `/j/:raceCode`               | Athlete registration           |
+| `/signup/:meetCode`          | Athlete registration           |
 | `/t/:raceCode`               | Finish-line timing console     |
 | `/r/:raceCode`               | Results                        |

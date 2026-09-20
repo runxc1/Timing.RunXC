@@ -237,7 +237,12 @@ as $$
 declare
   v_meet public.meets%rowtype;
 begin
-  select * into v_meet from meets where code = public.normalize_code(p_code);
+  -- Runners get one code to type; accept either the meet code or the
+  -- signup code so both printed links and dictation work.
+  select * into v_meet from meets
+   where code = public.normalize_code(p_code)
+      or signup_code = public.normalize_code(p_code)
+   limit 1;
   if not found then
     raise exception 'MEET_NOT_FOUND';
   end if;

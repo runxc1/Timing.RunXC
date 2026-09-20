@@ -19,7 +19,7 @@ const race = ref<{
   tiebreak_depth: number;
 } | null>(null);
 
-/** Codes belong to the parent meet: /j/{code} registers, /t/{timerCode} times. */
+/** Codes belong to the parent meet: /signup/{code} registers, /t/{timerCode} times. */
 const meet = ref<{
   id: string;
   name: string;
@@ -140,7 +140,7 @@ async function importPool() {
 // --- share links -------------------------------------------------------------
 
 const regUrl = computed(() =>
-  meet.value?.code ? `${window.location.origin}/j/${meet.value.code}` : "",
+  meet.value?.code ? `${window.location.origin}/signup/${meet.value.code}` : "",
 );
 const timerUrl = computed(() =>
   meet.value?.timer_code ? `${window.location.origin}/t/${meet.value.timer_code}` : "",

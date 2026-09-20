@@ -112,7 +112,7 @@ const links = computed(() => {
   if (!c) return null;
   const o = window.location.origin;
   return {
-    register: `${o}/j/${c.code}`,
+    register: `${o}/signup/${c.code}`,
     results: `${o}/r/${c.code}`,
     timer: `${o}/t/${c.timerCode}`,
   };

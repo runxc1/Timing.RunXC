@@ -61,7 +61,7 @@ interface StandingRow {
 
 const route = useRoute();
 const meetCode = computed(() => normalizeCode(String(route.params.meetCode ?? "")));
-const registerPath = computed(() => `/j/${meetCode.value}`);
+const registerPath = computed(() => `/signup/${meetCode.value}`);
 const registerUrl = computed(() => `${window.location.origin}${registerPath.value}`);
 
 const meet = ref<Meet | null>(null);
