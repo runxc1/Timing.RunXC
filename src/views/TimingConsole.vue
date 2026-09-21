@@ -21,7 +21,7 @@ import {
   parkedCount,
   discardParked,
 } from "../lib/sync";
-import { normalizeCode, isValidCode } from "../lib/codes";
+import { normalizeCode, isValidAthleteCode, ATHLETE_CODE_MAX } from "../lib/codes";
 import { formatClock } from "../lib/time";
 import { computeTeamStandings, type ScorableRunner } from "../lib/scoring";
 import { startCamera } from "../lib/scan";
@@ -266,8 +266,8 @@ async function submitCode() {
   matchError.value = "";
   pendingWalkOn.value = null;
   if (!code) return;
-  if (!isValidCode(code)) {
-    matchError.value = "Codes are 6 characters.";
+  if (!isValidAthleteCode(code)) {
+    matchError.value = `Codes are ${ATHLETE_CODE_MAX} characters at most.`;
     return;
   }
   const slot = targetSlot.value;
@@ -379,8 +379,8 @@ async function openScanner() {
   if (!videoEl.value) return;
   try {
     stopCam = await startCamera(videoEl.value, (found) => {
-      const code = normalizeCode(found.text).slice(0, 6);
-      if (!isValidCode(code)) return false;
+      const code = normalizeCode(found.text).slice(0, ATHLETE_CODE_MAX);
+      if (!isValidAthleteCode(code)) return false;
       // Unknown codes fall through to the walk-on prompt.
       codeInput.value = code;
       void submitCode();
@@ -577,7 +577,7 @@ const queuedBackupCount = computed(() => pendingBackup.value.filter((t) => !t.se
                   autocapitalize="characters"
                   autocomplete="off"
                   inputmode="text"
-                  maxlength="7"
+                  maxlength="10"
                   placeholder="Code → Enter"
                   class="min-w-0 flex-1 rounded-xl border border-ink-700 bg-ink-900 px-4 py-3.5 text-center font-display text-xl font-bold tracking-[0.25em] text-brand-300 placeholder:text-sm placeholder:font-sans placeholder:tracking-normal placeholder:text-ink-600 focus:border-brand-400 focus:outline-none"
                   @keyup.enter="submitCode()"

@@ -67,7 +67,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   NAME_REQUIRED: "Please enter your name.",
   CODE_TAKEN:
     "That athlete code already belongs to another runner. Leave it blank and we'll assign you a new one.",
-  CODE_LENGTH: "Athlete codes are exactly 6 characters — or leave it blank and we'll assign one.",
+  CODE_LENGTH: "Athlete codes are up to 8 characters — or leave it blank and we'll assign one.",
   SIGNUP_CODE_REQUIRED:
     "This meet needs a signup code. It's printed on the flyer — ask your coach or the timing tent.",
   GENDER_INVALID: "Pick Boys or Girls so we can score you in the right competition.",
@@ -425,8 +425,8 @@ async function copyCode() {
             autocapitalize="characters"
             autocomplete="off"
             spellcheck="false"
-            maxlength="7"
-            placeholder="··· ···"
+            maxlength="10"
+            placeholder="OPTIONAL"
             class="mt-1.5 w-full rounded-xl border border-ink-700 bg-ink-950 px-4 py-3 text-center font-mono text-2xl font-bold uppercase tracking-[0.3em] text-brand-300 placeholder:text-ink-600 focus:border-brand-400 focus:outline-none"
           />
           <span class="mt-1.5 block text-xs text-slate-500">

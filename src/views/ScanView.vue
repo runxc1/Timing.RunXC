@@ -5,7 +5,7 @@ import { useLiveQuery } from "../lib/liveQuery";
 import { db, type MirrorAthlete, type MirrorSlot } from "../lib/db";
 import { makeClient } from "../lib/supabase";
 import { pullMeetRaces, pullRace, subscribeRace } from "../lib/sync";
-import { formatCode, normalizeCode, isValidCode } from "../lib/codes";
+import { formatCode, normalizeCode, isValidAthleteCode, ATHLETE_CODE_MAX } from "../lib/codes";
 import { formatClock } from "../lib/time";
 import { startCamera } from "../lib/scan";
 
@@ -137,8 +137,11 @@ async function doScan(raw: string) {
   const code = normalizeCode(raw);
   outcome.value = null;
   if (!code || scanningNow.value || !race.value) return;
-  if (!isValidCode(code)) {
-    outcome.value = { kind: "error", message: "Codes are 6 letters or digits — check the sticker." };
+  if (!isValidAthleteCode(code)) {
+    outcome.value = {
+      kind: "error",
+      message: `Codes are ${ATHLETE_CODE_MAX} letters or digits at most — check the sticker.`,
+    };
     return;
   }
   scanningNow.value = true;
@@ -166,9 +169,20 @@ async function doScan(raw: string) {
     seq: number;
     slot_id: string;
     code: string;
+    race_name?: string;
     athlete?: { name: string | null; school: string | null };
   };
   if (navigator.vibrate) navigator.vibrate(30);
+  if (res.status === "other_division") {
+    const who = res.athlete?.name ?? formatCode(res.code);
+    outcome.value = {
+      kind: "error",
+      message: `${who} belongs to ${res.race_name ?? "another division"} — switch divisions first.`,
+    };
+    codeInput.value = "";
+    void nextTick(focusInput);
+    return;
+  }
   if (res.status === "already_in") {
     outcome.value = {
       kind: "already_in",
@@ -229,8 +243,8 @@ async function openScanner() {
   if (!videoEl.value) return;
   try {
     stopCam = await startCamera(videoEl.value, (found) => {
-      const code = normalizeCode(found.text).slice(0, 6);
-      if (!isValidCode(code)) return false;
+      const code = normalizeCode(found.text).slice(0, ATHLETE_CODE_MAX);
+      if (!isValidAthleteCode(code)) return false;
       void doScan(code);
       void closeScanner();
       return true;
@@ -319,7 +333,7 @@ function slotName(s: MirrorSlot): string {
               autocapitalize="characters"
               autocomplete="off"
               inputmode="text"
-              maxlength="7"
+              maxlength="10"
               placeholder="Scan / type code ↵"
               class="min-w-0 flex-1 rounded-xl border border-ink-700 bg-ink-900 px-4 py-4 text-center font-display text-2xl font-bold tracking-[0.3em] text-brand-300 placeholder:text-sm placeholder:font-sans placeholder:tracking-normal placeholder:text-ink-600 focus:border-brand-400 focus:outline-none"
               @keyup.enter="doScan(codeInput)"

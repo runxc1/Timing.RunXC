@@ -2,7 +2,8 @@
 
 A near-zero-cost, offline-first PWA for timing cross-country meets. One phone at the
 finish line taps a button for every runner that crosses; runners identify themselves
-with a 6-character code (scanned from a QR sticker or typed in). Team scores
+with a short code (generated as 4 characters, or any pre-printed 1–8 characters,
+scanned from a QR sticker or typed in). Team scores
 (classic top-5 with 6th-place tiebreaker) are computed automatically.
 
 Hosting cost target: **$0/month** — static frontend on GitHub Pages + Supabase
@@ -86,8 +87,10 @@ npm run build       # typecheck + production build to dist/
 
 ## How it works (short version)
 
-- **Codes** — every athlete gets a 6-char code (unambiguous alphabet). QR stickers
-  encode just the code; the console resolves it against the race roster.
+- **Codes** — athlete codes are unique *within a meet*: generated ones are 4 chars
+  from an unambiguous alphabet, and entry fields accept any pre-printed 1–8
+  alphanumeric code (other meets may reuse the same code). QR stickers encode just
+  the code; the scanner resolves it across the meet and flags wrong-division scans.
 - **Ordering** — each FINISH tap stores a per-race monotonic `seq` plus the device
   clock. The outbox flusher retries durably; on a `(race_id, seq)` conflict it pulls
   the server's max seq and renumbers, so two devices (or a long offline stretch)

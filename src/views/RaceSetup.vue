@@ -3,7 +3,7 @@ import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { makeClient } from "../lib/supabase";
 import { useSession } from "../stores/session";
-import { formatCode, genCode } from "../lib/codes";
+import { formatCode, genAthleteCode } from "../lib/codes";
 
 const route = useRoute();
 const session = useSession();
@@ -126,7 +126,7 @@ async function importPool() {
   const rows: Array<{ race_id: string; code: string; source: string }> = [];
   const existing = new Set(athletes.value.map((a) => a.code));
   while (rows.length < importCount.value) {
-    const code = genCode();
+    const code = genAthleteCode();
     if (existing.has(code)) continue;
     existing.add(code);
     rows.push({ race_id: race.value.id, code, source: "import" });

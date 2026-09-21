@@ -4,7 +4,7 @@ import { useRoute } from "vue-router";
 import { makeClient } from "../lib/supabase";
 import { subscribeTimerEvents } from "../lib/sync";
 import { formatClock } from "../lib/time";
-import { normalizeCode, isValidCode } from "../lib/codes";
+import { normalizeCode, isValidAthleteCode } from "../lib/codes";
 import { useSession } from "../stores/session";
 
 /**
@@ -208,8 +208,8 @@ const addError = ref("");
 async function addRunner() {
   addError.value = "";
   const code = normalizeCode(addCode.value);
-  if (code && !isValidCode(code)) {
-    addError.value = "Codes are 6 letters/digits — or leave blank for an open slot.";
+  if (code && !isValidAthleteCode(code)) {
+    addError.value = "Codes are up to 8 letters/digits — or leave blank for an open slot.";
     return;
   }
   const ms = addTime.value ? parseClock(addTime.value) : null;
@@ -408,8 +408,8 @@ const timerLabel = (deviceId: string) => deviceId.slice(0, 4).toUpperCase();
         <input
           v-model="addCode"
           autocapitalize="characters"
-          maxlength="7"
-          placeholder="ABC123"
+          maxlength="10"
+          placeholder="AB12"
           class="mt-1 w-full rounded-xl border border-ink-700 bg-ink-950 px-4 py-2.5 font-display text-lg font-bold tracking-[0.25em] text-brand-300 focus:border-brand-400 focus:outline-none"
         />
         <label class="mt-3 block text-xs font-bold uppercase tracking-wider text-slate-500">Insert after</label>
