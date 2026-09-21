@@ -118,19 +118,27 @@ Production is GitHub Pages (frontend, custom domain) + Supabase free tier
    ```
 
 2. **Create a Supabase project** at [supabase.com](https://supabase.com) (free
-   tier is plenty). Grab three values from the dashboard:
-   - **Project ref** — the id in `https://supabase.com/dashboard/project/<ref>/…`
+   tier is plenty). Grab these from the dashboard:
    - **URL + publishable anon key** — Project Settings → API Keys
-   - **DB password** — Project Settings → Database
+   - **Project ref** — the id in `https://supabase.com/dashboard/project/<ref>/…`
+     (the publish script remembers it after the first run)
+   - *DB password* — Project Settings → Database. Not needed: the CLI connects
+     through the management API with your access token.
 
-3. **Publish migrations** — pick either, both are idempotent:
-   - Locally: `.\scripts\publish-supabase.ps1` — it prompts for the project
-     ref, an access token (account avatar → Access tokens) and the DB
-     password, then runs `login` / `link` / `db push`. Nothing is stored.
-   - From CI: add secrets `SUPABASE_ACCESS_TOKEN` + `SUPABASE_DB_PASSWORD`
-     (Settings → Secrets and variables → Actions), then run **Deploy Supabase
-     migrations** manually. New migrations in `supabase/migrations/` are
-     applied in order; already-applied ones are skipped.
+3. **Publish migrations** — both paths are idempotent; new files in
+   `supabase/migrations/` are applied in order and already-applied ones skipped.
+   - Locally: `.\scripts\publish-supabase.ps1`. It asks for an access token
+     (account avatar → Access tokens) **once** — `supabase login` stores it in
+     your OS credential store — and remembers the project ref in
+     `%LOCALAPPDATA%\runxc-timing\publish.json`, so from then on it just pushes.
+     If you're already signed in to the Supabase CLI with one linked project,
+     even the first run is prompt-free. Add `-DryRun` to see what would be
+     applied, `-Forget` to drop the cached ref, or `-ProjectRef <ref>` to
+     publish somewhere else once without touching the cache. Only the ref is
+     written to disk — never a token or password.
+   - From CI: add secret `SUPABASE_ACCESS_TOKEN` (and optionally variable
+     `SUPABASE_PROJECT_REF`) under Settings → Secrets and variables → Actions,
+     then run **Deploy Supabase migrations** manually. It runs the same script.
 
 4. **Configure the Pages build** — add two repository **Variables** (same
    settings page, *Variables* tab; they're public values baked in at build):

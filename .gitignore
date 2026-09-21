@@ -34,6 +34,10 @@ dist-ssr
 # Aspire-generated local Supabase runtime data
 aspire/infra/supabase/db-data/
 
+# Supabase CLI machine-local link state (pooler URL, cached ref, ...).
+# scripts/publish-supabase.ps1 keeps its own cache outside the repo.
+supabase/.temp/
+
 # .NET build output (Aspire AppHost)
 bin/
 obj/
