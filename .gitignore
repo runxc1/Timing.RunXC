@@ -41,3 +41,4 @@ supabase/.temp/
 # .NET build output (Aspire AppHost)
 bin/
 obj/
+.vs/*
