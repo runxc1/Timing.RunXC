@@ -4,6 +4,7 @@ import { useRoute } from "vue-router";
 import { makeClient } from "../lib/supabase";
 import { useSession } from "../stores/session";
 import { formatCode, genAthleteCode } from "../lib/codes";
+import { isoToLocalInput, toIsoOrNull } from "../lib/time";
 
 const route = useRoute();
 const session = useSession();
@@ -165,12 +166,6 @@ function copyLink(text: string, key: string) {
   }, 1500);
 }
 
-function scheduledLocal(v: string | null): string {
-  if (!v) return "";
-  const d = new Date(v);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
 </script>
 
 <template>
@@ -205,10 +200,10 @@ function scheduledLocal(v: string | null): string {
         <label class="block">
           <span class="text-xs font-bold uppercase tracking-wider text-slate-400">Scheduled start</span>
           <input
-            :value="race.scheduled_start ? scheduledLocal(race.scheduled_start) : ''"
+            :value="isoToLocalInput(race.scheduled_start)"
             type="datetime-local"
             class="mt-1.5 w-full rounded-xl border border-ink-700 bg-ink-950 px-4 py-2.5 text-sm focus:border-brand-400 focus:outline-none"
-            @input="race.scheduled_start = ($event.target as HTMLInputElement).value ? new Date(($event.target as HTMLInputElement).value).toISOString() : null"
+            @input="race.scheduled_start = toIsoOrNull(($event.target as HTMLInputElement).value)"
           />
         </label>
         <div class="grid grid-cols-2 gap-3">

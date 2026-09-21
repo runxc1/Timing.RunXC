@@ -4,6 +4,7 @@ import { useRoute } from "vue-router";
 import QRCode from "qrcode";
 import { makeClient } from "../lib/supabase";
 import { formatCode, normalizeCode } from "../lib/codes";
+import { defaultStartInput, toIsoOrNull } from "../lib/time";
 import { useSession } from "../stores/session";
 
 const session = useSession();
@@ -18,6 +19,7 @@ const client = computed(() =>
 interface MeetInfo {
   id: string;
   name: string;
+  meet_date: string | null;
   admin_code: string;
   /** Public code behind /signup/ and /r/ links. */
   code: string | null;
@@ -53,7 +55,7 @@ function showToast(msg: string) {
 }
 
 const MEET_COLS =
-  "id, name, admin_code, code, signup_code, timer_code, scanner_code, registration_locked_at, signup_required";
+  "id, name, meet_date, admin_code, code, signup_code, timer_code, scanner_code, registration_locked_at, signup_required";
 
 async function load() {
   error.value = "";
@@ -89,6 +91,8 @@ async function load() {
     manageable[0];
   meetInfo.value = info;
   if (info.code) session.rememberMeet(info.code);
+  // Pre-fill new races with the meet date so only the time usually needs typing.
+  raceTime.value ||= defaultStartInput(info.meet_date);
   const meetId = info.id;
   const [r, s, a] = await Promise.all([
     c.from("races").select("id, name, status, scheduled_start").eq("meet_id", meetId).order("created_at"),
@@ -123,7 +127,7 @@ async function createRace() {
   const { error: err } = await client.value.from("races").insert({
     meet_id: meetInfo.value.id,
     name: raceName.value.trim(),
-    scheduled_start: raceTime.value ? new Date(raceTime.value).toISOString() : null,
+    scheduled_start: toIsoOrNull(raceTime.value),
   });
   creatingRace.value = false;
   if (err) {
@@ -840,7 +844,12 @@ const statusColors: Record<string, string> = {
             class="flex-1 rounded-lg border border-ink-700 bg-ink-950 px-3 py-2.5 text-sm focus:border-brand-400 focus:outline-none"
             @keyup.enter="createRace"
           />
-          <input v-model="raceTime" type="time" class="rounded-lg border border-ink-700 bg-ink-950 px-3 py-2.5 text-sm focus:border-brand-400 focus:outline-none" />
+          <input
+            v-model="raceTime"
+            type="datetime-local"
+            aria-label="Scheduled start"
+            class="rounded-lg border border-ink-700 bg-ink-950 px-3 py-2.5 text-sm focus:border-brand-400 focus:outline-none"
+          />
           <button
             class="rounded-lg bg-brand-400 px-5 py-2.5 text-sm font-black text-ink-950 hover:bg-brand-300 disabled:opacity-50"
             :disabled="creatingRace || !meetInfo"
