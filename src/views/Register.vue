@@ -14,10 +14,13 @@ interface Division {
 
 interface Meet {
   id: string;
+  /** The meet's own public code (the URL may carry the signup code instead). */
+  code: string;
   name: string;
   location: string | null;
   meet_date: string | null;
   registration_locked: boolean;
+  signup_required: boolean;
   divisions: Division[];
 }
 
@@ -34,6 +37,7 @@ const raceId = ref("");
 const name = ref("");
 const schoolId = ref("");
 const grade = ref("");
+const gender = ref<"" | "M" | "F">("");
 const signupCode = ref("");
 const athleteCode = ref("");
 
@@ -59,6 +63,9 @@ const ERROR_MESSAGES: Record<string, string> = {
   CODE_TAKEN:
     "That athlete code already belongs to another runner. Leave it blank and we'll assign you a new one.",
   CODE_LENGTH: "Athlete codes are exactly 6 characters — or leave it blank and we'll assign one.",
+  SIGNUP_CODE_REQUIRED:
+    "This meet needs a signup code. It's printed on the flyer — ask your coach or the timing tent.",
+  GENDER_INVALID: "Pick Boys or Girls so we can score you in the right competition.",
 };
 
 function messageFor(raw: string | undefined, fallback: string): string {
@@ -148,6 +155,9 @@ const meetDateLabel = computed(() => {
   });
 });
 
+/** Whether this meet insists on a signup code (default true for older meets). */
+const codeRequired = computed(() => meet.value?.signup_required !== false);
+
 async function submit() {
   if (busy.value) return;
   error.value = "";
@@ -157,21 +167,27 @@ async function submit() {
     error.value = ERROR_MESSAGES.DIVISION_NOT_FOUND;
     return;
   }
-  if (!code) {
+  if (!gender.value) {
+    error.value = ERROR_MESSAGES.GENDER_INVALID;
+    return;
+  }
+  if (codeRequired.value && !code) {
     error.value = ERROR_MESSAGES.SIGNUP_CODE_INVALID;
     return;
   }
   signupCode.value = code;
 
   busy.value = true;
-  const client = makeClient({ signupCode: code });
+  const client = makeClient(code ? { signupCode: code } : {});
   const { data, error: err } = await client.rpc("join_meet", {
-    p_signup_code: code,
+    p_signup_code: code || null,
+    p_meet_code: meet.value?.code ?? meetCode.value,
     p_race_id: raceId.value,
     p_name: name.value.trim(),
     p_school_id: schoolId.value || null,
     p_grade: grade.value || null,
     p_code: claimedCode || null,
+    p_gender: gender.value,
   });
   busy.value = false;
 
@@ -180,7 +196,7 @@ async function submit() {
     return;
   }
   const d = data as { code: string; race_name: string };
-  rememberSignupCode(code);
+  if (code) rememberSignupCode(code);
   doneQr.value = await QRCode.toDataURL(d.code, { margin: 1, width: 240 }).catch(() => "");
   done.value = { code: d.code, name: name.value.trim(), raceName: d.race_name };
 }
@@ -191,6 +207,7 @@ function resetForNextRunner() {
   copied.value = false;
   name.value = "";
   grade.value = "";
+  gender.value = "";
   athleteCode.value = "";
 }
 
@@ -279,7 +296,7 @@ async function copyCode() {
           This meet has been finalized, so no more runners can be added or claimed.
         </p>
         <RouterLink
-          :to="`/r/${meetCode}`"
+          :to="`/meet/${meetCode}`"
           class="mt-4 inline-block rounded-xl bg-brand-400 px-5 py-2.5 text-sm font-black text-ink-950 transition hover:bg-brand-300"
         >
           See results
@@ -325,6 +342,29 @@ async function copyCode() {
           />
         </label>
 
+        <div>
+          <span class="text-xs font-bold uppercase tracking-wider text-slate-400">Competing as</span>
+          <div class="mt-1.5 grid grid-cols-2 gap-2">
+            <button
+              v-for="g in [
+                { v: 'F', label: 'Girls' },
+                { v: 'M', label: 'Boys' },
+              ]"
+              :key="g.v"
+              type="button"
+              class="rounded-xl border px-4 py-3 text-base font-bold transition"
+              :class="
+                gender === g.v
+                  ? 'border-brand-400 bg-brand-400/15 text-brand-300'
+                  : 'border-ink-700 bg-ink-950 text-slate-400 hover:border-ink-600'
+              "
+              @click="gender = g.v as 'M' | 'F'"
+            >
+              {{ g.label }}
+            </button>
+          </div>
+        </div>
+
         <div class="grid grid-cols-[1fr_7.5rem] gap-3">
           <label class="block">
             <span class="text-xs font-bold uppercase tracking-wider text-slate-400">
@@ -353,7 +393,7 @@ async function copyCode() {
           </label>
         </div>
 
-        <label class="block">
+        <label v-if="codeRequired" class="block">
           <span class="text-xs font-bold uppercase tracking-wider text-slate-400">Meet signup code</span>
           <input
             v-model="signupCode"
@@ -401,8 +441,8 @@ async function copyCode() {
 
         <p class="text-center text-xs text-slate-600">
           Live results:
-          <RouterLink :to="`/r/${meetCode}`" class="font-bold text-brand-300 hover:text-brand-400">
-            /r/{{ meetCode }}
+          <RouterLink :to="`/meet/${meetCode}`" class="font-bold text-brand-300 hover:text-brand-400">
+            /meet/{{ meetCode }}
           </RouterLink>
         </p>
       </form>

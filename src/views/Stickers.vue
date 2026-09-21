@@ -69,7 +69,7 @@ function print() {
   <main class="mx-auto max-w-3xl px-5 py-8">
     <div class="screen-only flex items-center justify-between">
       <div>
-        <RouterLink :to="`/m/races/${raceId}`" class="text-xs font-bold text-slate-500 hover:text-slate-300">← Race</RouterLink>
+        <RouterLink :to="`/admin/races/${raceId}`" class="text-xs font-bold text-slate-500 hover:text-slate-300">← Race</RouterLink>
         <h1 class="mt-1 font-display text-2xl font-black tracking-tight">
           Stickers — {{ raceName }}
         </h1>

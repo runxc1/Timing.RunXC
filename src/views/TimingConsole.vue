@@ -21,7 +21,7 @@ import {
   parkedCount,
   discardParked,
 } from "../lib/sync";
-import { normalizeCode, isValidCode } from "../lib/codes";
+import { formatCode, normalizeCode, isValidCode } from "../lib/codes";
 import { formatClock } from "../lib/time";
 import { computeTeamStandings, type ScorableRunner } from "../lib/scoring";
 import { startCamera } from "../lib/scan";
@@ -258,6 +258,98 @@ const targetSlot = computed(
 /** Code entered that nobody registered with — offered as a walk-on finisher. */
 const pendingWalkOn = ref<string | null>(null);
 
+// --- entry mode: scanning/typing the code IS the finish tap ------------------
+// Stopwatch mode taps SPLIT then fills open slots with codes; entry mode flips
+// that for the person at the chute who only records order — each code creates
+// the finish record at the current clock time. Unknown codes offer a walk-on,
+// claimable later through registration exactly like a stopwatch walk-on.
+const mode = ref<"stopwatch" | "entry">("stopwatch");
+
+function setMode(next: "stopwatch" | "entry") {
+  mode.value = next;
+  pendingWalkOn.value = null;
+  matchError.value = "";
+  if (next === "entry") focusInput();
+}
+
+/** Append a finish at the current clock time. athleteId null + code set creates a placeholder. */
+async function appendFinish(athleteId: string | null, code: string | null) {
+  if (!race.value || t0.value == null || finalized.value) return;
+  const offset = Date.now() - t0.value;
+  if (navigator.vibrate) navigator.vibrate(25);
+  let aid = athleteId;
+  if (!aid && code) {
+    // Athlete first, slot second: the outbox replays in order.
+    aid = uuid();
+    await enqueueWrite({
+      timerCode: timerCode.value,
+      table: "athletes",
+      op: "insert",
+      rowId: aid,
+      payload: { race_id: race.value.id, code, source: "placeholder" },
+      mirrorPatch: { id: aid, race_id: race.value.id, code, name: null, source: "placeholder" },
+    });
+  }
+  // Derive seq from the freshest mirror (plus the local counter) so a second
+  // entry device is unlikely to collide on (race_id, seq).
+  const maxSeq = slots.value.reduce((m, s) => Math.max(m, s.seq ?? 0), 0);
+  if (maxSeq > seqCounter) seqCounter = maxSeq;
+  const id = uuid();
+  const seq = ++seqCounter;
+  await enqueueWrite({
+    timerCode: timerCode.value,
+    table: "finish_slots",
+    op: "insert",
+    rowId: id,
+    payload: {
+      race_id: race.value.id,
+      seq,
+      t0_offset_ms: offset,
+      device_id: deviceId(),
+      athlete_id: aid,
+      status: aid ? "matched" : "open",
+    },
+    mirrorPatch: {
+      id,
+      race_id: race.value.id,
+      seq,
+      t0_offset_ms: offset,
+      device_id: deviceId(),
+      athlete_id: aid,
+      status: aid ? "matched" : "open",
+      captured_at: new Date().toISOString(),
+    },
+  });
+  queueFlush();
+}
+
+async function submitEntry() {
+  const code = normalizeCode(codeInput.value);
+  matchError.value = "";
+  pendingWalkOn.value = null;
+  if (!code) return;
+  if (!isValidCode(code)) {
+    matchError.value = "Codes are 6 characters.";
+    return;
+  }
+  // A runner is only recorded once.
+  const dup = slots.value.find(
+    (s) => s.status === "matched" && s.athlete_id && athleteById.value.get(s.athlete_id)?.code === code,
+  );
+  if (dup) {
+    matchError.value = `${formatCode(code)} is already in at #${dup.seq}.`;
+    return;
+  }
+  const athlete = athleteByCode.value.get(code);
+  if (!athlete) {
+    pendingWalkOn.value = code;
+    return;
+  }
+  await appendFinish(athlete.id, null);
+  codeInput.value = "";
+  focusInput();
+}
+
 async function submitCode() {
   const code = normalizeCode(codeInput.value);
   matchError.value = "";
@@ -291,8 +383,16 @@ async function submitCode() {
  */
 async function recordWalkOn() {
   const code = pendingWalkOn.value;
-  const slot = targetSlot.value;
   if (!code || !race.value) return;
+  if (mode.value === "entry") {
+    // Entry mode: the walk-on creates its own finish at the current time.
+    await appendFinish(null, code);
+    pendingWalkOn.value = null;
+    codeInput.value = "";
+    focusInput();
+    return;
+  }
+  const slot = targetSlot.value;
   if (!slot) {
     matchError.value = "No open finish slot — press SPLIT first.";
     return;
@@ -380,7 +480,7 @@ async function openScanner() {
       if (!isValidCode(code)) return false;
       // Unknown codes fall through to the walk-on prompt.
       codeInput.value = code;
-      void submitCode();
+      void (mode.value === "entry" ? submitEntry() : submitCode());
       void closeScanner();
       return true;
     });
@@ -475,7 +575,7 @@ const queuedBackupCount = computed(() => pendingBackup.value.filter((t) => !t.se
         </div>
         <RouterLink
           v-if="finalized && meet.code"
-          :to="`/r/${meet.code}`"
+          :to="`/meet/${meet.code}`"
           class="rounded-lg bg-brand-400 px-3 py-1.5 text-xs font-black text-ink-950"
         >Results</RouterLink>
         <button
@@ -555,7 +655,31 @@ const queuedBackupCount = computed(() => pendingBackup.value.filter((t) => !t.se
         <!-- Running -->
         <div v-else class="flex flex-1 flex-col">
           <div v-if="!finalized" class="flex flex-col gap-3 p-4">
+            <!-- Primary picks how finishes are recorded -->
+            <div
+              v-if="!isBackup && running"
+              role="group"
+              aria-label="Recording mode"
+              class="grid grid-cols-2 gap-1 rounded-xl bg-ink-900 p-1"
+            >
+              <button
+                class="rounded-lg py-2 text-xs font-black uppercase tracking-wider transition"
+                :class="mode === 'stopwatch' ? 'bg-brand-400 text-ink-950' : 'text-slate-400 hover:text-slate-200'"
+                @click="setMode('stopwatch')"
+              >
+                Stopwatch
+              </button>
+              <button
+                class="rounded-lg py-2 text-xs font-black uppercase tracking-wider transition"
+                :class="mode === 'entry' ? 'bg-brand-400 text-ink-950' : 'text-slate-400 hover:text-slate-200'"
+                @click="setMode('entry')"
+              >
+                Code entry
+              </button>
+            </div>
+
             <button
+              v-if="isBackup || mode === 'stopwatch'"
               class="tap-button w-full rounded-2xl py-10 text-4xl font-black tracking-widest text-white shadow-[0_0_50px_-12px] transition"
               :class="isBackup
                 ? 'bg-amber-500 shadow-amber-500/60 hover:bg-amber-400'
@@ -565,7 +689,7 @@ const queuedBackupCount = computed(() => pendingBackup.value.filter((t) => !t.se
               SPLIT
             </button>
 
-            <!-- Primary: match codes to finish slots -->
+            <!-- Primary: match codes to finish slots, or enter finishes directly -->
             <template v-if="!isBackup">
               <div class="flex gap-2">
                 <input
@@ -575,9 +699,9 @@ const queuedBackupCount = computed(() => pendingBackup.value.filter((t) => !t.se
                   autocomplete="off"
                   inputmode="text"
                   maxlength="7"
-                  placeholder="Code → Enter"
+                  :placeholder="mode === 'entry' ? 'Scan / type code ↵' : 'Code → Enter'"
                   class="min-w-0 flex-1 rounded-xl border border-ink-700 bg-ink-900 px-4 py-3.5 text-center font-display text-xl font-bold tracking-[0.25em] text-brand-300 placeholder:text-sm placeholder:font-sans placeholder:tracking-normal placeholder:text-ink-600 focus:border-brand-400 focus:outline-none"
-                  @keyup.enter="submitCode"
+                  @keyup.enter="mode === 'entry' ? submitEntry() : submitCode()"
                 />
                 <button
                   class="rounded-xl bg-ink-800 px-4 text-2xl hover:bg-ink-700"
@@ -614,6 +738,10 @@ const queuedBackupCount = computed(() => pendingBackup.value.filter((t) => !t.se
                   </button>
                 </div>
               </div>
+              <p v-else-if="mode === 'entry'" class="text-xs text-slate-500">
+                Each code records a finish at the current clock time ({{ formatClock(elapsed) }}) —
+                unknown codes are added as unregistered and can claim their result later.
+              </p>
               <p v-else-if="targetSlot" class="text-xs text-slate-500">
                 Next code fills place {{ (targetSlot.seq ?? 0) }} —
                 <span class="text-slate-300">{{ formatClock(targetSlot.t0_offset_ms) }}</span>

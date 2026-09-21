@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 import QRCode from "qrcode";
 import { makeClient } from "../lib/supabase";
 import { formatCode, normalizeCode } from "../lib/codes";
 import { useSession } from "../stores/session";
 
 const session = useSession();
+const route = useRoute();
 const adminCodeInput = ref("");
 const error = ref("");
 
@@ -22,6 +24,7 @@ interface MeetInfo {
   signup_code: string | null;
   timer_code: string | null;
   registration_locked_at: string | null;
+  signup_required: boolean;
 }
 const meetInfo = ref<MeetInfo | null>(null);
 type Admin = { id: string; email: string; name: string | null; role: string; code: string };
@@ -48,44 +51,44 @@ function showToast(msg: string) {
   }, 4000);
 }
 
+const MEET_COLS =
+  "id, name, admin_code, code, signup_code, timer_code, registration_locked_at, signup_required";
+
 async function load() {
   error.value = "";
   const code = session.meetAdminCode;
   if (!code) return;
   const c = client.value;
-  // The credential is either the meet's own admin code or a delegated admin code.
-  let meetId = "";
-  const own = await c.from("meets").select("id").eq("admin_code", code).maybeSingle();
+  // The credential may manage several meets: as owner (meets.admin_code) or by
+  // delegation (meet_admins.code). Gather them all, then pick the one named in
+  // the URL (/admin/<meetCode>), falling back to the last one visited.
+  const [own, delegated] = await Promise.all([
+    c.from("meets").select(MEET_COLS).eq("admin_code", code),
+    c.from("meet_admins").select("meet_id").eq("code", code),
+  ]);
   if (own.error) {
     error.value = own.error.message;
     return;
   }
-  if (own.data) {
-    meetId = own.data.id;
-  } else {
-    const delegated = await c.from("meet_admins").select("meet_id").eq("code", code).maybeSingle();
-    if (delegated.error) {
-      error.value = delegated.error.message;
-      return;
-    }
-    meetId = delegated.data?.meet_id ?? "";
+  const manageable = [...((own.data ?? []) as MeetInfo[])];
+  const ids = ((delegated.data ?? []) as { meet_id: string }[])
+    .map((d) => d.meet_id)
+    .filter((id) => !manageable.some((m) => m.id === id));
+  if (ids.length) {
+    const more = await c.from("meets").select(MEET_COLS).in("id", ids);
+    manageable.push(...((more.data ?? []) as MeetInfo[]));
   }
-  if (!meetId) {
+  if (!manageable.length) {
     error.value = "Admin code not recognized.";
     return;
   }
-  const m = await c
-    .from("meets")
-    .select("id, name, admin_code, code, signup_code, timer_code, registration_locked_at")
-    .eq("id", meetId)
-    .maybeSingle();
-  if (!m.data) {
-    error.value = "Admin code not recognized.";
-    return;
-  }
-  const info = m.data as MeetInfo;
+  const wanted = String(route.params.meetCode ?? "") || session.lastMeetCode;
+  const info =
+    manageable.find((m) => (m.code ?? "").toUpperCase() === wanted.toUpperCase()) ??
+    manageable[0];
   meetInfo.value = info;
   if (info.code) session.rememberMeet(info.code);
+  const meetId = info.id;
   const [r, s, a] = await Promise.all([
     c.from("races").select("id, name, status, scheduled_start").eq("meet_id", meetId).order("created_at"),
     c.from("schools").select("id, name").eq("meet_id", meetId).order("name"),
@@ -100,7 +103,7 @@ async function load() {
     (info.admin_code === code ? (admins.value.find((x) => x.role === "owner") ?? null) : null);
 }
 
-watch(() => session.meetAdminCode, load, { immediate: true });
+watch([() => session.meetAdminCode, () => route.params.meetCode], load, { immediate: true });
 
 // --- unlock with existing code ---
 function unlock() {
@@ -349,12 +352,38 @@ const shareLinks = computed<ShareLink[]>(() => {
   const o = window.location.origin;
   const out: ShareLink[] = [];
   if (m.code) {
-    out.push({ key: "register", kind: "Registration", url: `${o}/signup/${m.code}` });
-    out.push({ key: "results", kind: "Results", url: `${o}/r/${m.code}` });
+    out.push({ key: "register", kind: "Registration", url: `${o}/meet/${m.code}/signup` });
+    out.push({ key: "results", kind: "Results", url: `${o}/meet/${m.code}` });
   }
   if (m.timer_code) out.push({ key: "timer", kind: "Timer", url: `${o}/t/${m.timer_code}` });
   return out;
 });
+
+// --- optional signup code ----------------------------------------------------
+const savingSignupReq = ref(false);
+async function toggleSignupRequired() {
+  const m = meetInfo.value;
+  if (!m || savingSignupReq.value) return;
+  savingSignupReq.value = true;
+  try {
+    const { error: err } = await client.value
+      .from("meets")
+      .update({ signup_required: !m.signup_required })
+      .eq("id", m.id);
+    if (err) {
+      showToast(err.message);
+      return;
+    }
+    m.signup_required = !m.signup_required;
+    showToast(
+      m.signup_required
+        ? "Signup code required again."
+        : "Runners can now sign up with just the meet link.",
+    );
+  } finally {
+    savingSignupReq.value = false;
+  }
+}
 
 const showQr = ref(false);
 const qrImages = ref<Record<string, string>>({});
@@ -570,6 +599,30 @@ const statusColors: Record<string, string> = {
           </p>
         </div>
 
+        <!-- Signup code requirement -->
+        <div class="mt-4 flex items-center justify-between gap-3 rounded-xl border border-ink-800 bg-ink-950 px-4 py-3">
+          <div>
+            <p class="text-[10px] font-black uppercase tracking-wider text-slate-500">Signup code</p>
+            <p class="mt-0.5 text-xs text-slate-400">
+              <template v-if="meetInfo.signup_required">Runners must enter the signup code.</template>
+              <template v-else>Optional — the meet link alone is enough to sign up.</template>
+            </p>
+          </div>
+          <button
+            role="switch"
+            :aria-checked="meetInfo.signup_required"
+            class="relative h-7 w-12 shrink-0 rounded-full transition-colors"
+            :class="meetInfo.signup_required ? 'bg-brand-400' : 'bg-ink-700'"
+            :disabled="savingSignupReq"
+            @click="toggleSignupRequired"
+          >
+            <span
+              class="absolute top-1 size-5 rounded-full bg-white transition-all"
+              :class="meetInfo.signup_required ? 'left-6' : 'left-1'"
+            />
+          </button>
+        </div>
+
         <!-- Share links -->
         <ul class="mt-4 flex flex-col gap-2">
           <li
@@ -732,7 +785,7 @@ const statusColors: Record<string, string> = {
           >
             <div class="flex items-start justify-between gap-3">
               <div class="min-w-0 flex-1">
-                <RouterLink :to="`/m/races/${r.id}`" class="block truncate font-bold hover:text-brand-300">
+                <RouterLink :to="`/admin/races/${r.id}`" class="block truncate font-bold hover:text-brand-300">
                   {{ r.name }}
                 </RouterLink>
                 <p class="mt-0.5 text-xs text-slate-500">
@@ -746,19 +799,19 @@ const statusColors: Record<string, string> = {
             </div>
             <div class="mt-3 flex flex-wrap items-center gap-2">
               <RouterLink
-                :to="`/m/races/${r.id}`"
+                :to="`/admin/races/${r.id}`"
                 class="rounded-lg bg-ink-800 px-3 py-1.5 text-xs font-bold hover:bg-ink-700"
               >
                 Setup
               </RouterLink>
               <RouterLink
-                :to="`/m/races/${r.id}/stickers`"
+                :to="`/admin/races/${r.id}/stickers`"
                 class="rounded-lg bg-ink-800 px-3 py-1.5 text-xs font-bold hover:bg-ink-700"
               >
                 Stickers
               </RouterLink>
               <RouterLink
-                :to="`/m/races/${r.id}/compare`"
+                :to="`/admin/races/${r.id}/compare`"
                 class="rounded-lg bg-ink-800 px-3 py-1.5 text-xs font-bold hover:bg-ink-700"
               >
                 Compare

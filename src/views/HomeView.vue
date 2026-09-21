@@ -26,10 +26,10 @@ function go(path: string) {
 }
 
 function openRegister() {
-  if (meetReady.value) go(`/signup/${meetCode.value}`);
+  if (meetReady.value) go(`/meet/${meetCode.value}/signup`);
 }
 function openResults() {
-  if (meetReady.value) go(`/r/${meetCode.value}`);
+  if (meetReady.value) go(`/meet/${meetCode.value}`);
 }
 function openTimer() {
   if (timerReady.value) go(`/t/${timerCode.value}`);
@@ -38,7 +38,7 @@ function openTimer() {
 function useLastMeet(target: "register" | "results") {
   const c = normalizeCode(lastMeet.value ?? "");
   if (!SHAPE.test(c)) return;
-  go(target === "register" ? `/signup/${c}` : `/r/${c}`);
+  go(target === "register" ? `/meet/${c}/signup` : `/meet/${c}`);
 }
 </script>
 
@@ -146,7 +146,7 @@ function useLastMeet(target: "register" | "results") {
       <RouterLink to="/meets/new" class="font-bold text-brand-300 hover:underline">
         Set up a new meet →
       </RouterLink>
-      <RouterLink to="/m" class="text-slate-400 hover:text-slate-200">
+      <RouterLink to="/admin" class="text-slate-400 hover:text-slate-200">
         Open my meet dashboard
       </RouterLink>
     </div>

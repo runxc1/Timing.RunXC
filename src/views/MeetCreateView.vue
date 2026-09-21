@@ -112,8 +112,8 @@ const links = computed(() => {
   if (!c) return null;
   const o = window.location.origin;
   return {
-    register: `${o}/signup/${c.code}`,
-    results: `${o}/r/${c.code}`,
+    register: `${o}/meet/${c.code}/signup`,
+    results: `${o}/meet/${c.code}`,
     timer: `${o}/t/${c.timerCode}`,
   };
 });
@@ -344,7 +344,7 @@ async function create() {
       </button>
       <button
         class="flex-1 rounded-xl bg-brand-400 py-3 text-sm font-black text-ink-950 hover:bg-brand-300"
-        @click="router.push('/m')"
+        @click="router.push('/admin')"
       >
         Go to dashboard →
       </button>

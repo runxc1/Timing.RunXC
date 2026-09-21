@@ -12,10 +12,10 @@ free tier. No custom server.
 
 - **Meet & race setup** — create a meet (admin code) and races, each with a short
   6-character race code for registration, timing, and results links.
-- **Self-service registration** — athletes at `…/signup/<CODE>` enter name, school
+- **Self-service registration** — athletes at `…/meet/<CODE>/signup` enter name, school
   (dropdown) and grade. Optionally pre-assign codes and print QR stickers.
 - **QR sticker sheets** — client-side QR generation, print-ready sheet
-  (`…/m/races/<id>/stickers`), one sticker per athlete code.
+  (`…/admin/races/<id>/stickers`), one sticker per athlete code.
 - **Finish-line console** (`…/t/<CODE>`) — big START button, then one big FINISH tap
   per runner; scan the QR (camera) or type the code. Live finish-order board.
 - **Offline-first** — every tap is written to IndexedDB (Dexie) and queued in an
@@ -175,13 +175,18 @@ aspire/               AppHost (aspire.love) + local Supabase infra config
 
 ## Route map
 
-| Route                        | Purpose                        |
-| ---------------------------- | ------------------------------ |
-| `/`                          | Landing / open a meet          |
-| `/meets/new`                 | Create meet                    |
-| `/m`                         | Meet dashboard (admin code)    |
-| `/m/races/:raceId`           | Race setup                     |
-| `/m/races/:raceId/stickers`  | Print QR stickers              |
-| `/signup/:meetCode`          | Athlete registration           |
-| `/t/:raceCode`               | Finish-line timing console     |
-| `/r/:raceCode`               | Results                        |
+| Route                        | Purpose                                  |
+| ---------------------------- | ---------------------------------------- |
+| `/`                          | Landing / open a meet                    |
+| `/meets/new`                 | Create meet                              |
+| `/admin`                     | All meets you administer (admin code)    |
+| `/admin/:meetCode`           | Meet dashboard                           |
+| `/admin/races/:raceId`       | Race setup                               |
+| `/admin/races/:raceId/stickers` | Print QR stickers                     |
+| `/admin/races/:raceId/compare` | Compare primary vs backup clocks       |
+| `/meet/:meetCode/signup`     | Athlete registration                     |
+| `/meet/:meetCode`            | Results                                  |
+| `/t/:timerCode`              | Finish-line timing console               |
+
+Older printed links (`/m…`, `/signup/…`, `/j/…`, `/r/…`) redirect to the
+current routes.

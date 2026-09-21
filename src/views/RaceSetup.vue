@@ -19,7 +19,7 @@ const race = ref<{
   tiebreak_depth: number;
 } | null>(null);
 
-/** Codes belong to the parent meet: /signup/{code} registers, /t/{timerCode} times. */
+/** Codes belong to the parent meet: /meet/{code}/signup registers, /t/{timerCode} times. */
 const meet = ref<{
   id: string;
   name: string;
@@ -140,7 +140,7 @@ async function importPool() {
 // --- share links -------------------------------------------------------------
 
 const regUrl = computed(() =>
-  meet.value?.code ? `${window.location.origin}/signup/${meet.value.code}` : "",
+  meet.value?.code ? `${window.location.origin}/meet/${meet.value.code}/signup` : "",
 );
 const timerUrl = computed(() =>
   meet.value?.timer_code ? `${window.location.origin}/t/${meet.value.timer_code}` : "",
@@ -179,7 +179,7 @@ function scheduledLocal(v: string | null): string {
     <template v-else>
       <div class="flex items-start justify-between gap-4">
         <div>
-          <RouterLink to="/m" class="text-xs font-bold text-slate-500 hover:text-slate-300">← Meet</RouterLink>
+          <RouterLink :to="meet?.code ? `/admin/${meet.code}` : '/admin'" class="text-xs font-bold text-slate-500 hover:text-slate-300">← Meet</RouterLink>
           <h1 class="mt-1 font-display text-2xl font-black tracking-tight">{{ race.name }}</h1>
           <p class="mt-1 text-sm text-slate-400">
             <template v-if="meet">{{ meet.name }} · </template>meet code
@@ -187,7 +187,7 @@ function scheduledLocal(v: string | null): string {
           </p>
         </div>
         <RouterLink
-          :to="meet?.timer_code ? `/t/${meet.timer_code}` : '/m'"
+          :to="meet?.timer_code ? `/t/${meet.timer_code}` : '/admin'"
           class="shrink-0 rounded-xl bg-brand-400 px-4 py-2.5 text-sm font-black text-ink-950 hover:bg-brand-300"
         >
           Open console
@@ -259,7 +259,7 @@ function scheduledLocal(v: string | null): string {
         </span>
         <RouterLink
           v-if="canCompare"
-          :to="`/m/races/${race.id}/compare`"
+          :to="`/admin/races/${race.id}/compare`"
           class="ml-auto rounded-xl border border-ink-700 px-4 py-2 text-sm font-bold text-slate-200 hover:bg-ink-800"
         >
           Compare timings →
@@ -302,7 +302,7 @@ function scheduledLocal(v: string | null): string {
           <p class="text-sm text-slate-400">Print code + QR stickers for bibs or wristbands.</p>
         </div>
         <RouterLink
-          :to="`/m/races/${race.id}/stickers`"
+          :to="`/admin/races/${race.id}/stickers`"
           class="rounded-xl bg-ink-800 px-4 py-2 text-sm font-bold hover:bg-ink-700"
         >
           Print sheet →

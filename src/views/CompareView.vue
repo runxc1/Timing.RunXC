@@ -281,7 +281,7 @@ const timerLabel = (deviceId: string) => deviceId.slice(0, 4).toUpperCase();
       <template v-else-if="raceInfo">
         <!-- Header -->
         <div class="flex flex-wrap items-center gap-3">
-          <RouterLink to="/m" class="text-xs font-bold text-slate-500 hover:text-slate-300">← Dashboard</RouterLink>
+          <RouterLink to="/admin" class="text-xs font-bold text-slate-500 hover:text-slate-300">← Dashboard</RouterLink>
           <h1 class="font-display text-xl font-black">{{ raceInfo.name }}</h1>
           <span
             class="rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider"

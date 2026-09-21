@@ -42,6 +42,7 @@ export interface MirrorAthlete {
   code?: string;
   name?: string | null;
   grade?: string | null;
+  gender?: string | null;
   source?: string;
   raw?: unknown;
 }

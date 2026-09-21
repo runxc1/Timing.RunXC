@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch, watchEffect } from "vue";
 import { useRoute } from "vue-router";
-import { supabase } from "../lib/supabase";
+import { makeClient, supabase } from "../lib/supabase";
+import { useSession } from "../stores/session";
 import { formatCode, normalizeCode } from "../lib/codes";
 import { formatClock } from "../lib/time";
 import { computeIndividualResults } from "../lib/scoring";
@@ -38,6 +39,7 @@ interface AthleteRow {
   name: string | null;
   school_id: string | null;
   grade: string | null;
+  gender: string | null;
 }
 
 interface SlotRow {
@@ -60,8 +62,28 @@ interface StandingRow {
 }
 
 const route = useRoute();
+const session = useSession();
 const meetCode = computed(() => normalizeCode(String(route.params.meetCode ?? "")));
-const registerPath = computed(() => `/signup/${meetCode.value}`);
+
+/** Verified meet admin for THIS meet — only admins see unclaimed codes. */
+const isAdmin = ref(false);
+async function checkAdmin(meetId: string) {
+  const code = session.meetAdminCode;
+  if (!code) {
+    isAdmin.value = false;
+    return;
+  }
+  const c = makeClient({ meetAdminCode: code });
+  const [own, delegated] = await Promise.all([
+    c.from("meets").select("id").eq("id", meetId).eq("admin_code", code).maybeSingle(),
+    c.from("meet_admins").select("meet_id").eq("meet_id", meetId).eq("code", code).maybeSingle(),
+  ]);
+  isAdmin.value = !!own.data || !!delegated.data;
+}
+
+/** Boys/girls split for mixed divisions. */
+const genderFilter = ref<"ALL" | "M" | "F">("ALL");
+const registerPath = computed(() => `/meet/${meetCode.value}/signup`);
 const registerUrl = computed(() => `${window.location.origin}${registerPath.value}`);
 
 const meet = ref<Meet | null>(null);
@@ -110,6 +132,7 @@ async function loadMeet() {
   schoolNames.value = new Map(
     ((s.data ?? []) as Array<{ id: string; name: string }>).map((x) => [x.id, x.name]),
   );
+  void checkAdmin(m.id);
 }
 
 async function loadDivision(id: string) {
@@ -126,7 +149,7 @@ async function loadDivision(id: string) {
       .select("id, name, status, team_size, tiebreak_depth, started_at, finalized_at")
       .eq("id", id)
       .maybeSingle(),
-    supabase.from("athletes").select("id, code, name, school_id, grade").eq("race_id", id),
+    supabase.from("athletes").select("id, code, name, school_id, grade, gender").eq("race_id", id),
     supabase
       .from("finish_slots")
       .select("id, seq, status, t0_offset_ms, athlete_id, place")
@@ -142,10 +165,15 @@ async function loadDivision(id: string) {
   slotRows.value = (sl.data ?? []) as SlotRow[];
 
   if (race.value.status === "finalized") {
-    const st = await supabase.rpc("get_team_standings", { p_race_id: id });
+    const st = await supabase.rpc("get_team_standings", {
+      p_race_id: id,
+      p_gender: genderFilter.value === "ALL" ? null : genderFilter.value,
+    });
     standings.value = (st.data ?? []) as unknown as StandingRow[];
   }
 }
+
+watch(genderFilter, () => void loadDivision(activeId.value));
 
 watchEffect(loadMeet);
 watch(activeId, (id) => void loadDivision(id));
@@ -194,6 +222,20 @@ const individual = computed(() =>
   ),
 );
 
+const genderByCode = computed(() => new Map(athleteRows.value.map((a) => [a.code, a.gender])));
+
+/** Boys/girls selection narrows the board; unlinked codes have no gender to match. */
+const visibleIndividual = computed(() => {
+  if (genderFilter.value === "ALL") return individual.value;
+  const g = genderByCode.value;
+  return individual.value.filter((r) => r.code && g.get(r.code) === genderFilter.value);
+});
+
+function genderLabel(code: string): string {
+  const g = genderByCode.value.get(code);
+  return g === "M" ? "B" : g === "F" ? "G" : "—";
+}
+
 /** Registrations that already carry a name; everything else is still a bare sticker code. */
 const namedIds = computed(() => new Set(athleteRows.value.filter((a) => a.name).map((a) => a.id)));
 const namedCodes = computed(() => new Set(athleteRows.value.filter((a) => a.name).map((a) => a.code)));
@@ -212,6 +254,13 @@ const unclaimedNote = computed(() =>
     : `${unclaimed.value.length} finishers still have unclaimed codes.`,
 );
 
+/** The actual pending codes — admins only, so they can hunt them down. */
+const unclaimedCodes = computed(() =>
+  unclaimed.value
+    .map((s) => athleteById.value.get(s.athlete_id as string)?.code)
+    .filter((c): c is string => !!c),
+);
+
 /** Runners per school in finish order, for the scoring detail under each team. */
 const runnersBySchool = computed(() => {
   const out = new Map<
@@ -225,6 +274,7 @@ const runnersBySchool = computed(() => {
   matched.forEach((s, i) => {
     const a = athleteById.value.get(s.athlete_id as string);
     if (!a?.name || !a.school_id) return;
+    if (genderFilter.value !== "ALL" && a.gender !== genderFilter.value) return;
     const list = out.get(a.school_id) ?? [];
     list.push({ athlete_id: a.id, name: a.name, grade: a.grade, place: s.place ?? i + 1 });
     out.set(a.school_id, list);
@@ -437,6 +487,27 @@ function exportStandings() {
             </button>
           </div>
 
+          <!-- Boys / girls split (matters when a division mixes them) -->
+          <div class="mt-4 flex gap-2 print:hidden">
+            <button
+              v-for="g in [
+                { v: 'ALL', label: 'All runners' },
+                { v: 'F', label: 'Girls' },
+                { v: 'M', label: 'Boys' },
+              ]"
+              :key="g.v"
+              class="rounded-full border px-3.5 py-1.5 text-xs font-bold transition"
+              :class="
+                genderFilter === g.v
+                  ? 'border-brand-400/60 bg-brand-400/10 text-brand-300'
+                  : 'border-ink-700 bg-ink-900 text-slate-400 hover:text-slate-200'
+              "
+              @click="genderFilter = g.v as typeof genderFilter"
+            >
+              {{ g.label }}
+            </button>
+          </div>
+
           <!-- Finish order -->
           <table class="mt-4 w-full text-sm">
             <thead>
@@ -444,12 +515,13 @@ function exportStandings() {
                 <th class="py-2 pr-2">Pl</th>
                 <th class="py-2 pr-2">Runner</th>
                 <th class="py-2 pr-2">School</th>
+                <th class="py-2 pr-2 text-center">Sx</th>
                 <th class="py-2 pr-2 text-center">Gr</th>
                 <th class="py-2 text-right">Time</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(row, i) in individual" :key="`${row.code}-${i}`" class="border-t border-ink-800/60">
+              <tr v-for="(row, i) in visibleIndividual" :key="`${row.code}-${i}`" class="border-t border-ink-800/60">
                 <td class="py-1.5 pr-2 font-display font-bold tabular-nums text-slate-400">
                   {{ row.place ?? "—" }}
                 </td>
@@ -464,17 +536,18 @@ function exportStandings() {
                   <span
                     v-else-if="!namedCodes.has(row.code)"
                     class="ml-1 rounded border border-amber-400/40 bg-amber-400/10 px-1.5 py-0.5 align-middle font-mono text-[10px] tracking-[0.08em] text-amber-200"
-                    title="Finisher with no registration yet. They can register with this code to add their name."
-                  >{{ formatCode(row.code) }}</span>
+                    :title="isAdmin ? 'Finisher with no registration yet — they can register with this code.' : 'Finisher with no registration yet.'"
+                  >{{ isAdmin ? formatCode(row.code) : "Unclaimed" }}</span>
                 </td>
                 <td class="py-1.5 pr-2 text-slate-400">{{ row.school_name ?? "—" }}</td>
+                <td class="py-1.5 pr-2 text-center text-slate-400">{{ genderLabel(row.code) }}</td>
                 <td class="py-1.5 pr-2 text-center tabular-nums text-slate-400">{{ row.grade ?? "—" }}</td>
                 <td class="py-1.5 text-right font-display font-bold tabular-nums text-slate-200">
                   {{ formatClock(row.offset_ms) }}
                 </td>
               </tr>
-              <tr v-if="individual.length === 0">
-                <td colspan="5" class="py-4 text-slate-500">No finishers recorded yet.</td>
+              <tr v-if="visibleIndividual.length === 0">
+                <td colspan="6" class="py-4 text-slate-500">No finishers recorded yet.</td>
               </tr>
             </tbody>
           </table>
@@ -489,6 +562,14 @@ function exportStandings() {
               Register with that code
             </RouterLink>
             to attach the runner's name and school.
+            <div v-if="isAdmin && unclaimedCodes.length" class="mt-2 flex flex-wrap gap-1.5">
+              <span
+                v-for="c in unclaimedCodes"
+                :key="c"
+                class="rounded bg-ink-950/60 px-2 py-0.5 font-mono text-xs font-bold tracking-[0.15em] text-amber-200"
+                >{{ formatCode(c) }}</span
+              >
+            </div>
           </div>
 
           <!-- Team standings -->
