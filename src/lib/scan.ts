@@ -50,11 +50,25 @@ async function loadZxing(): Promise<ReadBarcodes | null> {
   }
 }
 
-/** Open a camera stream into `video`. Returns cleanup fn. */
+export interface CameraOptions {
+  /** Same code seen again within this window is not reported. Default 2500ms. */
+  repeatWindowMs?: number;
+  /** Vibrate on every detection (even ones the caller ignores). Default true. */
+  feedback?: boolean;
+}
+
+/**
+ * Open a camera stream into `video` and report codes as they are read.
+ * `onFrame` returns true to stop, false to keep watching — so a scanner can be
+ * left open and fire once per new code. Returns a cleanup fn.
+ */
 export async function startCamera(
   video: HTMLVideoElement,
   onFrame: (found: ScanResult) => boolean,
+  options: CameraOptions = {},
 ): Promise<() => void> {
+  const repeatWindowMs = options.repeatWindowMs ?? 2500;
+  const feedback = options.feedback ?? true;
   const stream = await navigator.mediaDevices.getUserMedia({
     video: { facingMode: "environment", width: { ideal: 1280 } },
   });
@@ -64,8 +78,8 @@ export async function startCamera(
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   let stopped = false;
-  let lastText = "";
-  let lastAt = 0;
+  /** When each code was last reported, so one sticker held in view counts once. */
+  const reportedAt = new Map<string, number>();
   const useNative = getNative();
   if (!useNative) await loadZxing();
 
@@ -93,11 +107,21 @@ export async function startCamera(
         /* frame decode failure — try next frame */
       }
       const now = Date.now();
-      if (found && (found.text !== lastText || now - lastAt > 2500)) {
-        lastText = found.text;
-        lastAt = now;
-        if (navigator.vibrate) navigator.vibrate(40);
-        if (onFrame(found)) return; // consumer signals done
+      if (found) {
+        // Report each code once per repeat window: a sticker held in view (or
+        // flickering in and out of focus) counts a single time, so the camera
+        // can stay open and fire per runner.
+        const prev = reportedAt.get(found.text);
+        if (prev === undefined || now - prev >= repeatWindowMs) {
+          reportedAt.set(found.text, now);
+          if (reportedAt.size > 128) {
+            for (const [text, at] of reportedAt) {
+              if (now - at >= repeatWindowMs) reportedAt.delete(text);
+            }
+          }
+          if (feedback && navigator.vibrate) navigator.vibrate(40);
+          if (onFrame(found)) return; // consumer signals done
+        }
       }
     }
     requestAnimationFrame(tick);

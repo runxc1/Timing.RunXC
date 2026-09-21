@@ -8,6 +8,7 @@ import { pullMeetRaces, pullRace, subscribeRace } from "../lib/sync";
 import { formatCode, normalizeCode, isValidAthleteCode, ATHLETE_CODE_MAX } from "../lib/codes";
 import { formatClock } from "../lib/time";
 import { startCamera } from "../lib/scan";
+import { beepAccepted, beepRejected, isMuted, setMuted } from "../lib/beep";
 
 /**
  * Scanner console — the finish-line chute crew's screen (/scan/{scannerCode}).
@@ -19,6 +20,12 @@ import { startCamera } from "../lib/scan";
  * timer's oldest open split when one exists; unknown codes are recorded as
  * unclaimed placeholders (keeping their true place) with a shortcut to open
  * registration for that exact code.
+ *
+ * Feedback is audible because nobody watches a screen while runners stream by:
+ * a chirp means recorded, a buzz means look at the screen. The camera stays open
+ * in a small inline preview so stickers can be scanned back to back, and an
+ * immediate repeat of the code that just worked is dropped — that is the crew
+ * scanning twice, not a second runner.
  */
 
 const route = useRoute();
@@ -126,22 +133,47 @@ const scanningNow = ref(false);
 const codeInput = ref("");
 const inputEl = ref<HTMLInputElement | null>(null);
 
+/** Quiet note for non-errors, such as an ignored repeat scan. */
+const hint = ref("");
+let hintTimer: number | undefined;
+function showHint(text: string) {
+  hint.value = text;
+  window.clearTimeout(hintTimer);
+  hintTimer = window.setTimeout(() => (hint.value = ""), 2500);
+}
+
+/**
+ * The last code recorded, with when. Crew double-tap a sticker whenever they
+ * don't hear the first confirmation, so an immediate repeat of the code that
+ * just worked is dropped instead of nagging them.
+ */
+const REPEAT_WINDOW_MS = 3000;
+let lastRecorded: { code: string; at: number } = { code: "", at: 0 };
+
 function focusInput() {
   if (running.value) inputEl.value?.focus();
 }
 watch(running, (r) => {
   if (r) void nextTick(focusInput);
+  else closeCamera();
 });
 
 async function doScan(raw: string) {
   const code = normalizeCode(raw);
-  outcome.value = null;
   if (!code || scanningNow.value || !race.value) return;
+  if (code === lastRecorded.code && Date.now() - lastRecorded.at < REPEAT_WINDOW_MS) {
+    showHint(`${formatCode(code)} is already in — repeat scan ignored.`);
+    codeInput.value = "";
+    void nextTick(focusInput);
+    return;
+  }
+  outcome.value = null;
   if (!isValidAthleteCode(code)) {
     outcome.value = {
       kind: "error",
       message: `Codes are ${ATHLETE_CODE_MAX} letters or digits at most — check the sticker.`,
     };
+    beepRejected();
     return;
   }
   scanningNow.value = true;
@@ -162,6 +194,7 @@ async function doScan(raw: string) {
             ? "This division is finalized."
             : "Could not reach the server. Check the connection and scan again.",
     };
+    beepRejected();
     return;
   }
   const res = data as {
@@ -172,13 +205,13 @@ async function doScan(raw: string) {
     race_name?: string;
     athlete?: { name: string | null; school: string | null };
   };
-  if (navigator.vibrate) navigator.vibrate(30);
   if (res.status === "other_division") {
     const who = res.athlete?.name ?? formatCode(res.code);
     outcome.value = {
       kind: "error",
       message: `${who} belongs to ${res.race_name ?? "another division"} — switch divisions first.`,
     };
+    beepRejected();
     codeInput.value = "";
     void nextTick(focusInput);
     return;
@@ -190,6 +223,7 @@ async function doScan(raw: string) {
       code: res.code,
       message: `${formatCode(res.code)} is already in at #${res.seq}.`,
     };
+    beepRejected();
   } else {
     outcome.value = {
       kind: res.status === "placeholder" ? "placeholder" : "matched",
@@ -199,6 +233,8 @@ async function doScan(raw: string) {
       name: res.athlete?.name ?? null,
       school: res.athlete?.school ?? null,
     };
+    lastRecorded = { code, at: Date.now() };
+    beepAccepted();
   }
   codeInput.value = "";
   void nextTick(focusInput);
@@ -219,6 +255,8 @@ async function undoLast() {
     return;
   }
   outcome.value = { kind: "undone", seq: last.seq, code: last.code };
+  // Let the very same sticker count again right away.
+  lastRecorded = { code: "", at: 0 };
 }
 
 /** Deep link into registration with this exact code pre-claimed. */
@@ -232,32 +270,40 @@ function clearResult() {
   codeInput.value = "";
 }
 
-// --- camera overlay ---
-const scanning = ref(false);
+// --- camera: stays open so the chute can be scanned runner after runner ---
+const cameraOn = ref(false);
 const videoEl = ref<HTMLVideoElement | null>(null);
 let stopCam: (() => void) | null = null;
 
-async function openScanner() {
-  scanning.value = true;
-  await new Promise((r) => setTimeout(r, 50));
+async function toggleCamera() {
+  if (cameraOn.value) {
+    closeCamera();
+    return;
+  }
+  cameraOn.value = true;
+  await nextTick();
   if (!videoEl.value) return;
   try {
-    stopCam = await startCamera(videoEl.value, (found) => {
-      const code = normalizeCode(found.text).slice(0, ATHLETE_CODE_MAX);
-      if (!isValidAthleteCode(code)) return false;
-      void doScan(code);
-      void closeScanner();
-      return true;
-    });
+    stopCam = await startCamera(
+      videoEl.value,
+      (found) => {
+        const code = normalizeCode(found.text).slice(0, ATHLETE_CODE_MAX);
+        if (!isValidAthleteCode(code)) return false;
+        void doScan(code);
+        return false; // keep watching — the next runner is already in line
+      },
+      { feedback: false, repeatWindowMs: 1500 },
+    );
   } catch {
     outcome.value = { kind: "error", message: "Camera unavailable — type the code instead." };
-    void closeScanner();
+    beepRejected();
+    closeCamera();
   }
 }
-async function closeScanner() {
+function closeCamera() {
   stopCam?.();
   stopCam = null;
-  scanning.value = false;
+  cameraOn.value = false;
 }
 onUnmounted(() => stopCam?.());
 
@@ -287,12 +333,19 @@ function slotName(s: MirrorSlot): string {
       <!-- Header -->
       <header class="flex items-center gap-3 border-b border-ink-800 px-4 py-3">
         <span class="text-lg">📷</span>
-        <div class="min-w-0">
+        <div class="min-w-0 flex-1">
           <h1 class="truncate text-sm font-black uppercase tracking-wider">{{ meet.name }}</h1>
           <p class="text-[10px] uppercase tracking-widest text-slate-500">
             finish line scanner{{ meet.location ? ` · ${meet.location}` : "" }}
           </p>
         </div>
+        <button
+          class="rounded-xl border border-ink-700 bg-ink-900 px-3 py-1.5 text-sm"
+          :title="isMuted() ? 'Sound off — tap for beep feedback' : 'Sound on — tap to silence'"
+          @click="setMuted(!isMuted())"
+        >
+          {{ isMuted() ? "🔇" : "🔊" }}
+        </button>
       </header>
 
       <!-- Divisions -->
@@ -339,13 +392,24 @@ function slotName(s: MirrorSlot): string {
               @keyup.enter="doScan(codeInput)"
             />
             <button
-              class="rounded-xl bg-ink-800 px-4 text-2xl hover:bg-ink-700"
-              title="Scan QR"
-              @click="openScanner"
+              class="rounded-xl px-4 text-2xl"
+              :class="cameraOn ? 'bg-brand-400 text-ink-950' : 'bg-ink-800 hover:bg-ink-700'"
+              :title="cameraOn ? 'Stop the camera' : 'Scan with the camera (stays open)'"
+              @click="toggleCamera"
             >
-              ⌛
+              {{ cameraOn ? "✕" : "📷" }}
             </button>
           </div>
+
+          <!-- Camera preview: small and inline so the finish order stays visible -->
+          <div v-if="cameraOn" class="mx-auto w-full max-w-sm overflow-hidden rounded-2xl border border-ink-700 bg-black">
+            <video ref="videoEl" class="aspect-video w-full object-cover" playsinline muted />
+            <p class="bg-ink-900 px-3 py-2 text-[11px] leading-snug text-slate-400">
+              Each read beeps and records — keep scanning, the camera stays on.
+            </p>
+          </div>
+
+          <p v-if="hint" class="text-center text-xs font-bold text-slate-400">{{ hint }}</p>
 
           <!-- Outcome banner -->
           <div
@@ -430,16 +494,6 @@ function slotName(s: MirrorSlot): string {
         </ol>
       </div>
 
-      <!-- Camera overlay -->
-      <div v-if="scanning" class="fixed inset-0 z-50 flex flex-col bg-black/95">
-        <video ref="videoEl" class="min-h-0 w-full flex-1 object-cover" playsinline muted />
-        <div class="flex items-center justify-between p-4">
-          <p class="text-xs text-slate-400">Point at the QR sticker</p>
-          <button class="rounded-xl bg-ink-800 px-4 py-2 text-sm font-bold" @click="closeScanner">
-            Close
-          </button>
-        </div>
-      </div>
     </template>
 
     <div v-else class="flex flex-1 items-center justify-center text-sm text-slate-500">Loading…</div>

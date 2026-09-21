@@ -197,3 +197,9 @@ SPLIT per finisher, while chute crew scan/type athlete codes in finishing order
 on `/scan/...`. A scan fills the oldest open split (official time stays with the
 stopwatch); unknown codes keep their place as unclaimed placeholders with a
 one-tap link to register that exact code.
+
+The scanner console is built for loud finish lines: every read answers with a
+chirp (recorded) or a buzz (look at the screen), muting on the header speaker
+button. The camera preview is a small box under the code field and stays open,
+so crew can scan sticker after sticker without re-opening anything; an instant
+re-scan of the code that just landed is ignored as a double-tap.
