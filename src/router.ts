@@ -54,25 +54,13 @@ const routes: RouteRecordRaw[] = [
     component: () => import("./views/TimingConsole.vue"),
     meta: { hideChrome: true },
   },
-
-  // --- legacy links ---------------------------------------------------------
-  { path: "/m", redirect: "/admin" },
   {
-    path: "/m/races/:raceId/stickers",
-    redirect: (to) => `/admin/races/${to.params.raceId}/stickers`,
+    // Finish-line chute crew: scan/type athlete codes in finishing order.
+    path: "/scan/:scannerCode",
+    name: "scanner",
+    component: () => import("./views/ScanView.vue"),
+    meta: { hideChrome: true },
   },
-  {
-    path: "/m/races/:raceId/compare",
-    redirect: (to) => `/admin/races/${to.params.raceId}/compare`,
-  },
-  { path: "/m/races/:raceId", redirect: (to) => `/admin/races/${to.params.raceId}` },
-  { path: "/signup/:meetCode", redirect: (to) => `/meet/${to.params.meetCode}/signup` },
-  {
-    // Older printed links used /j/<code>.
-    path: "/j/:meetCode",
-    redirect: (to) => `/meet/${to.params.meetCode}/signup`,
-  },
-  { path: "/r/:meetCode", redirect: (to) => `/meet/${to.params.meetCode}` },
 
   { path: "/:pathMatch(.*)*", redirect: "/" },
 ];

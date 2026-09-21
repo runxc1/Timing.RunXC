@@ -1,6 +1,6 @@
 -- ============================================
 -- SUPABASE MIGRATIONS (auto-generated)
--- Generated at: 2026-09-20 13:39:40
+-- Generated at: 2026-09-20 21:12:55
 -- Source: C:\temp\RunXc.Timing\supabase\migrations
 -- ============================================
 
@@ -1312,7 +1312,12 @@ as $$
 declare
   v_meet public.meets%rowtype;
 begin
-  select * into v_meet from meets where code = public.normalize_code(p_code);
+  -- Runners get one code to type; accept either the meet code or the
+  -- signup code so both printed links and dictation work.
+  select * into v_meet from meets
+   where code = public.normalize_code(p_code)
+      or signup_code = public.normalize_code(p_code)
+   limit 1;
   if not found then
     raise exception 'MEET_NOT_FOUND';
   end if;
@@ -1895,11 +1900,659 @@ INSERT INTO public._aspire_applied_migrations (filename) VALUES ('20260918000001
 COMMIT;
 \endif
 
+-- Migration: 20260919000001_gender_optional_signup.sql
+-- ----------------------------------------
+SELECT (NOT EXISTS (SELECT 1 FROM public._aspire_applied_migrations WHERE filename = '20260919000001_gender_optional_signup.sql'))::text AS _run_mig \gset
+\if :_run_mig
+BEGIN;
+-- ===========================================================================
+-- Gender on athletes + optional signup codes + gender-aware team scoring.
+--   * meets.signup_required  — when false, /meet/<code>/signup works with no code
+--   * athletes.gender        — 'M' | 'F' (null for unclaimed placeholders)
+--   * join_meet gains p_meet_code + p_gender; a signup code is only demanded
+--     when the meet requires one
+--   * get_team_standings(p_race_id, p_gender) scores each gender separately,
+--     so mixed divisions can run together and still score boys vs girls
+-- ===========================================================================
+
+alter table public.meets
+  add column if not exists signup_required boolean not null default true;
+
+alter table public.athletes
+  add column if not exists gender text
+    constraint athletes_gender_check check (gender is null or gender in ('M', 'F'));
+
+-- ---------------------------------------------------------------------------
+-- Signup gate: an open meet accepts registrations without the code.
+-- ---------------------------------------------------------------------------
+create or replace function public.signup_ok(p_meet_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1 from meets m
+     where m.id = p_meet_id
+       and m.registration_locked_at is null
+       and (
+         not m.signup_required
+         or m.signup_code = upper(public.hdr('x-signup-code'))
+       )
+  );
+$$;
+
+-- ---------------------------------------------------------------------------
+-- get_meet also reports whether the signup code is required.
+-- ---------------------------------------------------------------------------
+create or replace function public.get_meet(p_code text)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  v_meet public.meets%rowtype;
+begin
+  select * into v_meet from meets
+   where code = public.normalize_code(p_code)
+      or signup_code = public.normalize_code(p_code)
+   limit 1;
+  if not found then
+    raise exception 'MEET_NOT_FOUND';
+  end if;
+
+  return jsonb_build_object(
+    'id', v_meet.id,
+    'code', v_meet.code,
+    'name', v_meet.name,
+    'location', v_meet.location,
+    'meet_date', v_meet.meet_date,
+    'registration_locked', v_meet.registration_locked_at is not null,
+    'signup_required', v_meet.signup_required,
+    'divisions', (
+      select coalesce(
+        jsonb_agg(
+          jsonb_build_object(
+            'id', r.id, 'name', r.name, 'status', r.status,
+            'starts_at', r.scheduled_start
+          )
+          order by r.scheduled_start asc nulls last, r.created_at asc
+        ),
+        '[]'::jsonb
+      )
+      from races r
+      where r.meet_id = v_meet.id and r.status <> 'draft'
+    )
+  );
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- join_meet: resolves the meet by signup code, or by meet code when the meet
+-- does not require a signup code. Captures gender (M/F).
+-- ---------------------------------------------------------------------------
+drop function if exists public.join_meet(text, uuid, text, uuid, text, text);
+
+create or replace function public.join_meet(
+  p_signup_code text default null,
+  p_meet_code text default null,
+  p_race_id uuid default null,
+  p_name text default null,
+  p_school_id uuid default null,
+  p_grade text default null,
+  p_code text default null,
+  p_gender text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_meet public.meets%rowtype;
+  v_race public.races%rowtype;
+  v_athlete public.athletes%rowtype;
+  v_code text;
+  v_signup text;
+begin
+  v_signup := upper(public.normalize_code(coalesce(p_signup_code, '')));
+
+  if v_signup <> '' then
+    select * into v_meet from meets where signup_code = v_signup;
+    if not found then
+      raise exception 'SIGNUP_CODE_INVALID';
+    end if;
+  else
+    -- No signup code: allowed only for meets that opted out of requiring one.
+    select * into v_meet from meets
+     where code = upper(public.normalize_code(coalesce(p_meet_code, '')))
+        or signup_code = upper(public.normalize_code(coalesce(p_meet_code, '')))
+     limit 1;
+    if not found then
+      raise exception 'SIGNUP_CODE_INVALID';
+    end if;
+    if v_meet.signup_required then
+      raise exception 'SIGNUP_CODE_REQUIRED';
+    end if;
+  end if;
+
+  if v_meet.registration_locked_at is not null then
+    raise exception 'REGISTRATION_LOCKED';
+  end if;
+
+  select * into v_race from races where id = p_race_id and meet_id = v_meet.id;
+  if not found then
+    raise exception 'DIVISION_NOT_FOUND';
+  end if;
+  if v_race.status = 'draft' then
+    raise exception 'DIVISION_NOT_OPEN';
+  end if;
+  if p_name is null or char_length(trim(p_name)) = 0 then
+    raise exception 'NAME_REQUIRED';
+  end if;
+  if p_gender is not null and trim(p_gender) <> ''
+     and upper(trim(p_gender)) not in ('M', 'F') then
+    raise exception 'GENDER_INVALID';
+  end if;
+
+  v_code := public.normalize_code(p_code);
+
+  if v_code = '' then
+    -- No code typed: hand out the next free generated code for this division.
+    v_code := public.gen_code('public.athletes'::regclass, 'code');
+    while exists (select 1 from athletes a where a.race_id = v_race.id and a.code = v_code) loop
+      v_code := public.gen_code('public.athletes'::regclass, 'code');
+    end loop;
+  else
+    if char_length(v_code) <> 6 then
+      raise exception 'CODE_LENGTH';
+    end if;
+    -- A placeholder (name null) left at the finish line stays claimable even
+    -- after finalize: that is how an unregistered runner gets their result.
+    if exists (
+      select 1 from athletes a
+       where a.race_id = v_race.id and a.code = v_code and a.name is not null
+    ) then
+      raise exception 'CODE_TAKEN';
+    end if;
+  end if;
+
+  select * into v_athlete from athletes
+   where race_id = v_race.id and code = v_code;
+
+  if found then
+    update athletes
+       set name = trim(p_name),
+           school_id = p_school_id,
+           grade = nullif(trim(coalesce(p_grade, '')), ''),
+           gender = coalesce(nullif(upper(trim(coalesce(p_gender, ''))), ''), gender),
+           registered_at = now()
+     where id = v_athlete.id
+     returning * into v_athlete;
+  else
+    insert into athletes (race_id, code, name, school_id, grade, gender, source, registered_at)
+    values (v_race.id, v_code, trim(p_name), p_school_id,
+            nullif(trim(coalesce(p_grade, '')), ''),
+            nullif(upper(trim(coalesce(p_gender, ''))), ''),
+            case when p_code is null or trim(p_code) = '' then 'assigned' else 'self' end,
+            now())
+    returning * into v_athlete;
+  end if;
+
+  return jsonb_build_object(
+    'athlete_id', v_athlete.id,
+    'code', v_athlete.code,
+    'race_id', v_race.id,
+    'race_name', v_race.name,
+    'meet_id', v_meet.id
+  );
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- Team standings per gender: pass p_gender ('M'|'F') to score only that
+-- gender using gender-relative finishing ranks. Null keeps old behavior.
+-- ---------------------------------------------------------------------------
+drop function if exists public.get_team_standings(uuid);
+
+create or replace function public.get_team_standings(
+  p_race_id uuid,
+  p_gender text default null
+)
+returns table (
+  school_id uuid,
+  school_name text,
+  score int,
+  tiebreak int,
+  finishers int,
+  rank int
+)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  with filtered as (
+    select a.school_id, s.place
+    from finish_slots s
+    join athletes a on a.id = s.athlete_id
+    where s.race_id = p_race_id
+      and s.status = 'matched'
+      and s.place is not null
+      and a.school_id is not null
+      and (p_gender is null or a.gender = p_gender)
+  ),
+  scored as (
+    select
+      school_id,
+      row_number() over (order by place) as eplace,
+      row_number() over (partition by school_id order by place) as runner_rank
+    from filtered
+  ),
+  teams as (
+    select
+      school_id,
+      sum(case when runner_rank <= (select team_size from races where id = p_race_id)
+               then eplace end)::int as score,
+      sum(case when runner_rank > (select team_size from races where id = p_race_id)
+                and runner_rank <= (select tiebreak_depth from races where id = p_race_id)
+               then eplace end)::int as tiebreak,
+      count(*)::int as finishers
+    from scored
+    group by school_id
+  ),
+  tb as (
+    select t.school_id, t.score, t.finishers, t.tiebreak
+    from teams t
+  )
+  select
+    tb.school_id,
+    sc.name as school_name,
+    tb.score,
+    tb.tiebreak,
+    tb.finishers,
+    -- Standard XC: complete teams (team_size finishers) rank ahead of
+    -- incomplete teams; within a tier, low score wins, then tiebreak.
+    rank() over (
+      order by
+        (tb.finishers >= (select team_size from races where id = p_race_id)) desc nulls last,
+        tb.score asc nulls last,
+        tb.tiebreak asc nulls last
+    )::int as rank
+  from tb
+  join schools sc on sc.id = tb.school_id
+  order by rank, sc.name;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- Grants + cache refresh
+-- ---------------------------------------------------------------------------
+grant execute on function public.signup_ok(uuid) to anon;
+grant execute on function public.get_meet(text) to anon;
+grant execute on function public.join_meet(text, text, uuid, text, uuid, text, text, text) to anon;
+grant execute on function public.get_team_standings(uuid, text) to anon;
+
+notify pgrst, 'reload schema';
+
+
+INSERT INTO public._aspire_applied_migrations (filename) VALUES ('20260919000001_gender_optional_signup.sql') ON CONFLICT (filename) DO NOTHING;
+COMMIT;
+\endif
+
+-- Migration: 20260920000001_scanner_role.sql
+-- ----------------------------------------
+SELECT (NOT EXISTS (SELECT 1 FROM public._aspire_applied_migrations WHERE filename = '20260920000001_scanner_role.sql'))::text AS _run_mig \gset
+\if :_run_mig
+BEGIN;
+-- ===========================================================================
+-- Dedicated finish-line scanner role
+--
+-- The stopwatch timer only taps splits; a separate crew member (or two) at
+-- the chute scans/types each athlete code in finishing order. A per-meet
+-- `scanner_code` authorizes exactly that: resolve the meet, record scans and
+-- undo the last one. Nothing else — no admin, no finalize, no edits.
+--
+-- Scans are recorded server-side (record_scan) so concurrent scanners can
+-- never collide on finish_slots (race_id, seq): the race row is locked while
+-- the next position is chosen. A scan attaches the code to the timer's oldest
+-- open split slot when one exists (the official time comes from the stopwatch);
+-- otherwise it appends a new slot at the current clock offset. Unknown codes
+-- become unclaimed placeholders immediately so true finishing order survives;
+-- registration with that same code afterwards claims them (existing flow).
+-- ===========================================================================
+
+alter table public.meets
+  add column if not exists scanner_code text unique;
+
+do $$
+declare
+  m record;
+  c text;
+begin
+  for m in select id, scanner_code from public.meets loop
+    if m.scanner_code is null then
+      loop
+        c := public.gen_code('public.meets'::regclass, 'scanner_code');
+        exit when not exists (select 1 from public.meets x where x.scanner_code = c);
+      end loop;
+      update public.meets set scanner_code = c where id = m.id;
+    end if;
+  end loop;
+end;
+$$;
+
+alter table public.meets
+  alter column scanner_code set default gen_code('public.meets'::regclass, 'scanner_code');
+
+-- ---------------------------------------------------------------------------
+-- Code management: teach the generic setters about the scanner kind
+-- ---------------------------------------------------------------------------
+
+create or replace function public.check_code_available(p_kind text, p_code text)
+returns boolean
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  v_code text := upper(public.normalize_code(p_code));
+begin
+  if not public.code_ok(v_code) then
+    return false;
+  end if;
+  if p_kind = 'signup' then
+    return not exists (select 1 from meets m where m.signup_code = v_code);
+  elsif p_kind = 'timer' then
+    return not exists (select 1 from meets m where m.timer_code = v_code);
+  elsif p_kind = 'scanner' then
+    return not exists (select 1 from meets m where m.scanner_code = v_code);
+  elsif p_kind = 'meet' then
+    return not exists (select 1 from meets m where m.code = v_code);
+  else
+    raise exception 'BAD_KIND';
+  end if;
+end;
+$$;
+
+create or replace function public.set_meet_code(p_meet_id uuid, p_kind text, p_new_code text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_code text := upper(public.normalize_code(p_new_code));
+begin
+  if not public.meet_auth_ok(p_meet_id) then
+    raise exception 'NOT_ALLOWED';
+  end if;
+
+  if v_code = '' then
+    -- Regenerate a safe random code.
+    if p_kind = 'signup' then
+      loop
+        v_code := public.gen_code('public.meets'::regclass, 'signup_code');
+        exit when not exists (select 1 from meets m where m.signup_code = v_code);
+      end loop;
+      update meets set signup_code = v_code where id = p_meet_id;
+    elsif p_kind = 'timer' then
+      loop
+        v_code := public.gen_code('public.meets'::regclass, 'timer_code');
+        exit when not exists (select 1 from meets m where m.timer_code = v_code);
+      end loop;
+      update meets set timer_code = v_code where id = p_meet_id;
+    elsif p_kind = 'scanner' then
+      loop
+        v_code := public.gen_code('public.meets'::regclass, 'scanner_code');
+        exit when not exists (select 1 from meets m where m.scanner_code = v_code);
+      end loop;
+      update meets set scanner_code = v_code where id = p_meet_id;
+    else
+      raise exception 'BAD_KIND';
+    end if;
+  else
+    if not public.code_ok(v_code) then
+      if public.profane(v_code) then
+        raise exception 'CODE_PROFANE';
+      else
+        raise exception 'CODE_FORMAT';
+      end if;
+    end if;
+    if p_kind = 'signup' then
+      if exists (select 1 from meets m where m.signup_code = v_code and m.id <> p_meet_id) then
+        raise exception 'CODE_TAKEN';
+      end if;
+      update meets set signup_code = v_code where id = p_meet_id;
+    elsif p_kind = 'timer' then
+      if exists (select 1 from meets m where m.timer_code = v_code and m.id <> p_meet_id) then
+        raise exception 'CODE_TAKEN';
+      end if;
+      update meets set timer_code = v_code where id = p_meet_id;
+    elsif p_kind = 'scanner' then
+      if exists (select 1 from meets m where m.scanner_code = v_code and m.id <> p_meet_id) then
+        raise exception 'CODE_TAKEN';
+      end if;
+      update meets set scanner_code = v_code where id = p_meet_id;
+    else
+      raise exception 'BAD_KIND';
+    end if;
+  end if;
+
+  return jsonb_build_object(p_kind, v_code);
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- Scanner devices: resolve the meet from a scanner code
+-- ---------------------------------------------------------------------------
+
+create or replace function public.resolve_scanner(p_code text)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  v_meet public.meets%rowtype;
+begin
+  select * into v_meet from meets where scanner_code = upper(public.normalize_code(p_code));
+  if not found then
+    raise exception 'SCANNER_CODE_INVALID';
+  end if;
+
+  return jsonb_build_object(
+    'meet', jsonb_build_object('id', v_meet.id, 'name', v_meet.name,
+                               'location', v_meet.location, 'code', v_meet.code),
+    'races', (
+      select coalesce(
+        jsonb_agg(
+          jsonb_build_object(
+            'id', r.id, 'name', r.name, 'status', r.status,
+            'starts_at', r.scheduled_start, 'started_at', r.started_at
+          )
+          order by r.scheduled_start asc nulls last, r.created_at asc
+        ),
+        '[]'::jsonb
+      )
+      from races r
+      where r.meet_id = v_meet.id and r.status <> 'draft'
+    )
+  );
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- record_scan: one scanned code = one recorded finisher, ordered server-side
+-- ---------------------------------------------------------------------------
+
+create or replace function public.record_scan(p_scanner_code text, p_race_id uuid, p_code text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_meet   public.meets%rowtype;
+  v_race   public.races%rowtype;
+  v_ath    public.athletes%rowtype;
+  v_slot   public.finish_slots%rowtype;
+  v_code   text := upper(public.normalize_code(p_code));
+  v_new    boolean := false;
+begin
+  select * into v_meet from meets where scanner_code = upper(public.normalize_code(p_scanner_code));
+  if not found then
+    raise exception 'SCANNER_CODE_INVALID';
+  end if;
+
+  select * into v_race from races where id = p_race_id and meet_id = v_meet.id;
+  if not found then
+    raise exception 'RACE_NOT_FOUND';
+  end if;
+  if v_race.status <> 'running' or v_race.started_at is null then
+    raise exception 'NOT_RUNNING';
+  end if;
+
+  if v_code !~ '^[A-Z0-9]{6}$' then
+    raise exception 'CODE_FORMAT';
+  end if;
+
+  -- Serialize concurrent scanners on this race before choosing a position.
+  perform id from races where id = p_race_id for update;
+
+  select a.* into v_ath from athletes a where a.race_id = p_race_id and a.code = v_code;
+  if found then
+    -- A runner is only recorded once.
+    select * into v_slot from finish_slots
+     where race_id = p_race_id and athlete_id = v_ath.id;
+    if found then
+      return jsonb_build_object(
+        'status', 'already_in', 'seq', v_slot.seq, 'code', v_code
+      );
+    end if;
+  else
+    -- Unknown code: keep the finisher's true place with an unclaimed
+    -- placeholder; registering that same code later claims it.
+    insert into athletes (race_id, code, source)
+    values (p_race_id, v_code, 'placeholder')
+    returning * into v_ath;
+    v_new := true;
+  end if;
+
+  -- Prefer attaching to the timer's oldest open split so official times come
+  -- from the stopwatch; otherwise append at the current clock.
+  select * into v_slot
+    from finish_slots
+   where race_id = p_race_id and status = 'open' and athlete_id is null
+   order by seq
+   limit 1
+     for update;
+
+  if found then
+    update finish_slots
+       set athlete_id = v_ath.id, status = 'matched'
+     where id = v_slot.id
+     returning * into v_slot;
+  else
+    insert into finish_slots (race_id, seq, t0_offset_ms, device_id, athlete_id, status)
+    values (
+      p_race_id,
+      (select coalesce(max(seq), 0) + 1 from finish_slots where race_id = p_race_id),
+      (extract(epoch from now() - v_race.started_at) * 1000)::bigint,
+      'scanner',
+      v_ath.id,
+      'matched'
+    )
+    returning * into v_slot;
+  end if;
+
+  return jsonb_build_object(
+    'status', case when v_new then 'placeholder' else 'matched' end,
+    'seq', v_slot.seq,
+    'slot_id', v_slot.id,
+    'code', v_ath.code,
+    'athlete', jsonb_build_object(
+      'id', v_ath.id, 'name', v_ath.name, 'grade', v_ath.grade,
+      'school', (select sc.name from schools sc where sc.id = v_ath.school_id)
+    )
+  );
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- undo_scan: remove a mis-scan (and its unclaimed placeholder, if any)
+-- ---------------------------------------------------------------------------
+
+create or replace function public.undo_scan(p_scanner_code text, p_slot_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_meet public.meets%rowtype;
+  v_race public.races%rowtype;
+  v_slot public.finish_slots%rowtype;
+begin
+  select * into v_meet from meets where scanner_code = upper(public.normalize_code(p_scanner_code));
+  if not found then
+    raise exception 'SCANNER_CODE_INVALID';
+  end if;
+
+  select * into v_slot from finish_slots
+   where id = p_slot_id
+     and race_id in (select id from races where meet_id = v_meet.id);
+  if not found then
+    raise exception 'SLOT_NOT_FOUND';
+  end if;
+
+  select * into v_race from races where id = v_slot.race_id;
+  if v_race.status = 'finalized' then
+    raise exception 'FINALIZED';
+  end if;
+
+  perform id from races where id = v_slot.race_id for update;
+
+  delete from finish_slots where id = v_slot.id;
+
+  -- An unclaimed placeholder exists only for its finish record — remove it
+  -- too so the code can be re-scanned or registered cleanly.
+  if v_slot.athlete_id is not null then
+    delete from athletes a
+     where a.id = v_slot.athlete_id
+       and a.name is null
+       and a.source = 'placeholder'
+       and not exists (select 1 from finish_slots s where s.athlete_id = a.id);
+  end if;
+
+  return jsonb_build_object('removed_seq', v_slot.seq);
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- Grants + pool reload
+-- ---------------------------------------------------------------------------
+
+grant execute on function public.resolve_scanner(text) to anon;
+grant execute on function public.record_scan(text, uuid, text) to anon;
+grant execute on function public.undo_scan(text, uuid) to anon;
+
+notify pgrst, 'reload schema';
+
+
+INSERT INTO public._aspire_applied_migrations (filename) VALUES ('20260920000001_scanner_role.sql') ON CONFLICT (filename) DO NOTHING;
+COMMIT;
+\endif
+
 \set ON_ERROR_STOP on
 DO $$
 DECLARE missing text;
 BEGIN
-    SELECT string_agg(e.f, ', ') INTO missing FROM (VALUES ('20260906000001_init.sql'), ('20260911000001_walkons_and_editable_results.sql'), ('20260912000001_meet_admins.sql'), ('20260918000001_meet_codes_dual_timing.sql')) AS e(f)
+    SELECT string_agg(e.f, ', ') INTO missing FROM (VALUES ('20260906000001_init.sql'), ('20260911000001_walkons_and_editable_results.sql'), ('20260912000001_meet_admins.sql'), ('20260918000001_meet_codes_dual_timing.sql'), ('20260919000001_gender_optional_signup.sql'), ('20260920000001_scanner_role.sql')) AS e(f)
         WHERE NOT EXISTS (SELECT 1 FROM public._aspire_applied_migrations m WHERE m.filename = e.f);
     IF missing IS NOT NULL THEN
         RAISE EXCEPTION '[Migrations] ABORT: not all migrations applied this pass (tracking left truthful for retry). Missing: %', missing;

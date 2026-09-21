@@ -41,6 +41,11 @@ const gender = ref<"" | "M" | "F">("");
 const signupCode = ref("");
 const athleteCode = ref("");
 
+// The scanner console's "Register this runner" link arrives with ?code=XXXXXX —
+// pre-fill it so the finish already recorded for that code gets claimed.
+const prefillCode = normalizeCode(String(route.query.code ?? ""));
+if (prefillCode) athleteCode.value = prefillCode;
+
 const busy = ref(false);
 const error = ref("");
 const done = ref<{ code: string; name: string; raceName: string } | null>(null);
@@ -243,9 +248,10 @@ async function copyCode() {
         <img v-if="doneQr" :src="doneQr" alt="Your QR code" class="mx-auto mt-4 size-40 rounded-lg" />
       </div>
 
-      <p class="mt-4 text-sm font-semibold text-slate-300">Show this code at the finish line.</p>
+      <p class="mt-4 text-sm font-semibold text-slate-300">Put your sticker on your bib.</p>
       <p class="mt-1 text-xs text-slate-500">
-        Screenshot it. The timer scans or types it as you cross — that's what puts your name in the results.
+        Attach your QR sticker or clip to your bib before the race. Volunteers scan it just after the finish
+        line — that's what puts your name in the results. Keep this screen as a backup.
       </p>
 
       <div class="mt-6 flex flex-col gap-2">

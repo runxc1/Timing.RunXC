@@ -23,6 +23,7 @@ interface MeetInfo {
   code: string | null;
   signup_code: string | null;
   timer_code: string | null;
+  scanner_code: string | null;
   registration_locked_at: string | null;
   signup_required: boolean;
 }
@@ -52,7 +53,7 @@ function showToast(msg: string) {
 }
 
 const MEET_COLS =
-  "id, name, admin_code, code, signup_code, timer_code, registration_locked_at, signup_required";
+  "id, name, admin_code, code, signup_code, timer_code, scanner_code, registration_locked_at, signup_required";
 
 async function load() {
   error.value = "";
@@ -212,24 +213,29 @@ function copyText(text: string, key: string) {
 
 // --- codes & links ----------------------------------------------------------
 
-type CodeKind = "signup" | "timer";
+type CodeKind = "signup" | "timer" | "scanner";
 type CodeState = "idle" | "checking" | "ok" | "format" | "taken";
 
 /** Mirrors the server rules so we can word errors before saving. */
 const SHAPE = /^[A-Z0-9]{6}$/;
 const BLOCKED_WORDS = /fuck|shit|cunt/i;
 
-const drafts = ref<Record<CodeKind, string>>({ signup: "", timer: "" });
-const codeStates = ref<Record<CodeKind, CodeState>>({ signup: "idle", timer: "idle" });
+const drafts = ref<Record<CodeKind, string>>({ signup: "", timer: "", scanner: "" });
+const codeStates = ref<Record<CodeKind, CodeState>>({ signup: "idle", timer: "idle", scanner: "idle" });
 /** True while the draft holds a word the server blocks. */
-const blockedDraft = ref<Record<CodeKind, boolean>>({ signup: false, timer: false });
+const blockedDraft = ref<Record<CodeKind, boolean>>({ signup: false, timer: false, scanner: false });
 const busyKind = ref<CodeKind | null>(null);
 
-const codeKinds = ["signup", "timer"] as const;
-const kindLabel: Record<CodeKind, string> = { signup: "Signup code", timer: "Timer code" };
+const codeKinds = ["signup", "timer", "scanner"] as const;
+const kindLabel: Record<CodeKind, string> = {
+  signup: "Signup code",
+  timer: "Timer code",
+  scanner: "Scanner code",
+};
 const kindBlurb: Record<CodeKind, string> = {
   signup: "Registration fallback for posters, bibs and the sign-in table.",
   timer: "Gives any phone at the finish line a stopwatch for this meet.",
+  scanner: "For chute crew: scan finishers' QR stickers in order. No admin access.",
 };
 
 function draftOf(kind: CodeKind) {
@@ -238,7 +244,7 @@ function draftOf(kind: CodeKind) {
 function currentCode(kind: CodeKind) {
   const m = meetInfo.value;
   if (!m) return "";
-  return ((kind === "signup" ? m.signup_code : m.timer_code) ?? "").toUpperCase();
+  return (({ signup: m.signup_code, timer: m.timer_code, scanner: m.scanner_code })[kind] ?? "").toUpperCase();
 }
 function codeHint(kind: CodeKind): string {
   if (codeStates.value[kind] === "format") return "Must be exactly 6 letters or digits.";
@@ -330,11 +336,8 @@ async function setCode(kind: CodeKind, newCode: string | null) {
   const next = (data as Record<string, string> | null)?.[kind];
   drafts.value[kind] = "";
   codeStates.value[kind] = "idle";
-  showToast(
-    newCode
-      ? `${kind === "signup" ? "Signup" : "Timer"} code is now ${next ?? newCode}`
-      : `New ${kind === "signup" ? "signup" : "timer"} code: ${next ?? ""}`,
-  );
+  const label = kindLabel[kind];
+  showToast(newCode ? `${label} is now ${next ?? newCode}` : `New ${label.toLowerCase()}: ${next ?? ""}`);
   await load();
 }
 
@@ -356,6 +359,7 @@ const shareLinks = computed<ShareLink[]>(() => {
     out.push({ key: "results", kind: "Results", url: `${o}/meet/${m.code}` });
   }
   if (m.timer_code) out.push({ key: "timer", kind: "Timer", url: `${o}/t/${m.timer_code}` });
+  if (m.scanner_code) out.push({ key: "scanner", kind: "Scanner", url: `${o}/scan/${m.scanner_code}` });
   return out;
 });
 

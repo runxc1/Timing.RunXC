@@ -186,7 +186,11 @@ aspire/               AppHost (aspire.love) + local Supabase infra config
 | `/admin/races/:raceId/compare` | Compare primary vs backup clocks       |
 | `/meet/:meetCode/signup`     | Athlete registration                     |
 | `/meet/:meetCode`            | Results                                  |
-| `/t/:timerCode`              | Finish-line timing console               |
+| `/t/:timerCode`              | Stopwatch timer console (splits only)    |
+| `/scan/:scannerCode`         | Finish-line chute scanner (QR order)     |
 
-Older printed links (`/m…`, `/signup/…`, `/j/…`, `/r/…`) redirect to the
-current routes.
+The stopwatch timer and the code scanner are separate people: the timer taps
+SPLIT per finisher, while chute crew scan/type athlete codes in finishing order
+on `/scan/...`. A scan fills the oldest open split (official time stays with the
+stopwatch); unknown codes keep their place as unclaimed placeholders with a
+one-tap link to register that exact code.

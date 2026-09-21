@@ -322,10 +322,25 @@ export async function pullRace(
     client.from("finish_slots").select("*").eq("race_id", raceId),
   ]);
   if (races.data) await mergeRow("races", races.data as Record<string, unknown>);
+  const pending = new Set((await db.outbox.toArray()).map((o) => o.row_id));
   for (const a of athletes.data ?? []) {
     await mergeRow("athletes", a as Record<string, unknown>);
   }
   for (const s of slots.data ?? []) {
     await mergeRow("finish_slots", s as Record<string, unknown>);
   }
+  // The server is authoritative for this race: drop mirror rows it no longer
+  // returns (undone scans, deleted athletes) so stale rows can't haunt the UI.
+  const keepAthletes = new Set((athletes.data ?? []).map((a) => (a as { id: string }).id));
+  await db.athletes
+    .where("race_id")
+    .equals(raceId)
+    .filter((r) => !keepAthletes.has(r.id) && !pending.has(r.id))
+    .delete();
+  const keepSlots = new Set((slots.data ?? []).map((s) => (s as { id: string }).id));
+  await db.finish_slots
+    .where("race_id")
+    .equals(raceId)
+    .filter((r) => !keepSlots.has(r.id) && !pending.has(r.id))
+    .delete();
 }
