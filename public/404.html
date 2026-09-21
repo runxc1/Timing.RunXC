@@ -11,17 +11,14 @@
       // The app root is derived by stripping a known client route off the end
       // of the path, which also works under user.github.io/<repo>/ URLs.
       (function () {
-        var routes = [
-          /\/m\/races\/[^/]+\/stickers\/?$/,
-          /\/m\/races\/[^/]+\/?$/,
-          /\/[jtr]\/[^/]+\/?$/,
-          /\/m\/?$/,
-        ];
+        // Top-level routes from src/router.ts. Everything in front of one of
+        // them is the deploy prefix ("" when served from a domain root).
+        var roots = ["admin", "meet", "meets", "scan", "t"];
+        var parts = window.location.pathname.split("/");
         var base = "";
-        for (var i = 0; i < routes.length; i++) {
-          var m = window.location.pathname.match(routes[i]);
-          if (m) {
-            base = window.location.pathname.slice(0, m.index);
+        for (var i = 1; i < parts.length; i++) {
+          if (roots.indexOf(parts[i]) !== -1) {
+            base = window.location.pathname.slice(0, window.location.pathname.indexOf("/" + parts[i]));
             break;
           }
         }
