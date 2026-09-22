@@ -40,7 +40,13 @@ const isOwnerCode = computed(
 );
 const locked = computed(() => !!meetInfo.value?.registration_locked_at);
 const races = ref<
-  Array<{ id: string; name: string; status: string; scheduled_start: string | null }>
+  Array<{
+    id: string;
+    name: string;
+    status: string;
+    scheduled_start: string | null;
+    registration_closed_at: string | null;
+  }>
 >([]);
 const schools = ref<Array<{ id: string; name: string }>>([]);
 
@@ -98,7 +104,11 @@ async function load() {
   raceTime.value ||= defaultStartInput(info.meet_date);
   const meetId = info.id;
   const [r, s, a] = await Promise.all([
-    c.from("races").select("id, name, status, scheduled_start").eq("meet_id", meetId).order("created_at"),
+    c
+      .from("races")
+      .select("id, name, status, scheduled_start, registration_closed_at")
+      .eq("meet_id", meetId)
+      .order("created_at"),
     c.from("schools").select("id, name").eq("meet_id", meetId).order("name"),
     c.from("meet_admins").select("id, email, name, role, code").eq("meet_id", meetId).order("created_at"),
   ]);
@@ -131,6 +141,8 @@ async function createRace() {
     meet_id: meetInfo.value.id,
     name: raceName.value.trim(),
     scheduled_start: toIsoOrNull(raceTime.value),
+    // Registration is open from the moment a division exists; close it per race if needed.
+    status: "registration_open",
   });
   creatingRace.value = false;
   if (err) {
@@ -147,6 +159,33 @@ async function deleteRace(race: { id: string; name: string }) {
   const { error: err } = await client.value.from("races").delete().eq("id", race.id);
   if (err) error.value = err.message;
   else showToast(`Deleted ${race.name}`);
+  await load();
+}
+
+/**
+ * Per-division registration switch. Independent of the meet-wide lock: closing
+ * one race leaves the others taking signups.
+ */
+const busyRace = ref("");
+async function toggleRaceRegistration(race: {
+  id: string;
+  name: string;
+  registration_closed_at: string | null;
+}) {
+  if (busyRace.value) return;
+  busyRace.value = race.id;
+  error.value = "";
+  const open = race.registration_closed_at !== null;
+  const { error: err } = await client.value.rpc("set_race_registration", {
+    p_race_id: race.id,
+    p_open: open,
+  });
+  busyRace.value = "";
+  if (err) {
+    error.value = err.message;
+    return;
+  }
+  showToast(open ? `${race.name}: registration re-opened` : `${race.name}: registration closed`);
   await load();
 }
 
@@ -886,7 +925,8 @@ const statusColors: Record<string, string> = {
       <section class="mt-6">
         <h2 class="text-sm font-black uppercase tracking-wider text-slate-400">Races</h2>
         <p class="mt-1 text-xs text-slate-500">
-          Timers open the stopwatch with the meet's timer code — one link times every race.
+          Timers open the stopwatch with the meet's timer code — one link times every race. New races are
+          open for signups immediately; close one if it shouldn't take registrations yet.
         </p>
         <ul class="mt-3 flex flex-col gap-2">
           <li
@@ -903,10 +943,16 @@ const statusColors: Record<string, string> = {
                   {{ r.scheduled_start ? startLabel(r.scheduled_start) : "No start time set" }}
                 </p>
               </div>
-              <span
-                class="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wide"
-                :class="statusColors[r.status] ?? 'bg-slate-500/15 text-slate-300'"
-              >{{ r.status.replace('_', ' ') }}</span>
+              <div class="flex shrink-0 flex-col items-end gap-1">
+                <span
+                  class="rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wide"
+                  :class="statusColors[r.status] ?? 'bg-slate-500/15 text-slate-300'"
+                >{{ r.status.replace('_', ' ') }}</span>
+                <span
+                  v-if="r.registration_closed_at"
+                  class="rounded-full bg-red-500/15 px-2 py-0.5 text-[10px] font-black uppercase tracking-wide text-red-300"
+                >Signups closed</span>
+              </div>
             </div>
             <div class="mt-3 flex flex-wrap items-center gap-2">
               <RouterLink
@@ -927,6 +973,16 @@ const statusColors: Record<string, string> = {
               >
                 Compare
               </RouterLink>
+              <button
+                class="rounded-lg px-3 py-1.5 text-xs font-bold disabled:opacity-50"
+                :class="r.registration_closed_at
+                  ? 'bg-cyan-500/15 text-cyan-300 hover:bg-cyan-500/25'
+                  : 'bg-ink-800 text-slate-300 hover:bg-ink-700'"
+                :disabled="busyRace === r.id"
+                @click="toggleRaceRegistration(r)"
+              >
+                {{ r.registration_closed_at ? "Open signups" : "Close signups" }}
+              </button>
               <button
                 class="ml-auto rounded-lg px-3 py-1.5 text-xs font-bold text-slate-500 hover:bg-red-500/15 hover:text-red-300"
                 @click="deleteRace(r)"
@@ -1008,7 +1064,8 @@ const statusColors: Record<string, string> = {
         </div>
         <p class="mt-2 text-[11px] text-slate-500">
           Re-opening puts finalized races back on the stopwatch and lets athletes register again; closing or
-          opening registration alone leaves race results as they are.
+          opening registration alone leaves race results as they are. These cover every division at once — to
+          close a single race, use its own row above.
         </p>
       </section>
       </template>

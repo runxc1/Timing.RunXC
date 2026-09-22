@@ -18,6 +18,7 @@ const race = ref<{
   scheduled_start: string | null;
   team_size: number;
   tiebreak_depth: number;
+  registration_closed_at: string | null;
 } | null>(null);
 
 /** Codes belong to the parent meet: /meet/{code}/signup registers, /t/{timerCode} times. */
@@ -45,7 +46,7 @@ async function load() {
   if (!session.meetAdminCode) return;
   const { data, error: err } = await admin.value
     .from("races")
-    .select("id, meet_id, name, status, scheduled_start, team_size, tiebreak_depth")
+    .select("id, meet_id, name, status, scheduled_start, team_size, tiebreak_depth, registration_closed_at")
     .eq("id", raceId.value)
     .maybeSingle();
   if (err) {
@@ -112,6 +113,27 @@ async function setStatus(status: string) {
     .eq("id", race.value.id);
   if (err) error.value = err.message;
   else race.value.status = status;
+}
+
+/** Every division is open the moment it's created; this switch is per-division. */
+const registrationOpen = computed(() => race.value?.registration_closed_at == null);
+const switchingReg = ref(false);
+async function setRegistration(open: boolean) {
+  if (!race.value || switchingReg.value) return;
+  switchingReg.value = true;
+  error.value = "";
+  const { data, error: err } = await admin.value.rpc("set_race_registration", {
+    p_race_id: race.value.id,
+    p_open: open,
+  });
+  switchingReg.value = false;
+  if (err) {
+    error.value = err.message;
+    return;
+  }
+  race.value.registration_closed_at = open ? null : new Date().toISOString();
+  const status = (data as { status?: string } | null)?.status;
+  if (status) race.value.status = status;
 }
 
 const importCount = ref(10);
@@ -230,35 +252,63 @@ function copyLink(text: string, key: string) {
         </div>
       </section>
 
-      <!-- Status -->
-      <section class="mt-4 flex flex-wrap items-center gap-2">
-        <button
-          v-if="race.status === 'draft'"
-          class="rounded-xl bg-cyan-500/15 px-4 py-2 text-sm font-bold text-cyan-300 hover:bg-cyan-500/25"
-          @click="setStatus('registration_open')"
-        >
-          Open registration
-        </button>
-        <button
-          v-if="race.status === 'registration_open'"
-          class="rounded-xl bg-brand-400/15 px-4 py-2 text-sm font-bold text-brand-300 hover:bg-brand-400/25"
-          @click="setStatus('ready')"
-        >
-          Mark ready
-        </button>
-        <span
-          v-if="meet?.registration_locked_at"
-          class="rounded-full bg-violet-500/15 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-violet-300"
-        >
-          Registration locked
-        </span>
-        <RouterLink
-          v-if="canCompare"
-          :to="`/admin/races/${race.id}/compare`"
-          class="ml-auto rounded-xl border border-ink-700 px-4 py-2 text-sm font-bold text-slate-200 hover:bg-ink-800"
-        >
-          Compare timings →
-        </RouterLink>
+      <!-- Registration for this division only -->
+      <section class="mt-4 rounded-2xl border border-ink-800 bg-ink-900 p-5">
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <h2 class="font-bold">Registration</h2>
+            <p class="mt-1 text-sm text-slate-400">
+              <template v-if="registrationOpen">
+                Open — runners can sign up for this division on the meet's signup page. New divisions
+                start out open.
+              </template>
+              <template v-else>
+                Closed for this division only. Runners can still register for every other division, and
+                timing keeps working here.
+              </template>
+            </p>
+          </div>
+          <span
+            class="shrink-0 rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-wider"
+            :class="registrationOpen ? 'bg-cyan-500/15 text-cyan-300' : 'bg-red-500/15 text-red-300'"
+          >{{ registrationOpen ? "Open" : "Closed" }}</span>
+        </div>
+
+        <div class="mt-4 flex flex-wrap items-center gap-2">
+          <button
+            class="rounded-xl px-4 py-2 text-sm font-bold disabled:opacity-50"
+            :class="registrationOpen
+              ? 'bg-ink-800 text-slate-200 hover:bg-ink-700'
+              : 'bg-cyan-500/15 text-cyan-300 hover:bg-cyan-500/25'"
+            :disabled="switchingReg"
+            @click="setRegistration(!registrationOpen)"
+          >
+            {{ switchingReg ? "Saving…" : registrationOpen ? "Close registration" : "Re-open registration" }}
+          </button>
+          <button
+            v-if="race.status === 'registration_open'"
+            class="rounded-xl bg-brand-400/15 px-4 py-2 text-sm font-bold text-brand-300 hover:bg-brand-400/25"
+            @click="setStatus('ready')"
+          >
+            Mark ready
+          </button>
+          <span class="rounded-full bg-ink-800 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-slate-400">
+            {{ race.status.replace("_", " ") }}
+          </span>
+          <span
+            v-if="meet?.registration_locked_at"
+            class="rounded-full bg-violet-500/15 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-violet-300"
+          >
+            Meet lock on
+          </span>
+          <RouterLink
+            v-if="canCompare"
+            :to="`/admin/races/${race.id}/compare`"
+            class="ml-auto rounded-xl border border-ink-700 px-4 py-2 text-sm font-bold text-slate-200 hover:bg-ink-800"
+          >
+            Compare timings →
+          </RouterLink>
+        </div>
       </section>
 
       <!-- Sharing: every link is a meet-level link -->

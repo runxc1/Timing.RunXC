@@ -10,6 +10,8 @@ interface Division {
   name: string;
   status: string;
   starts_at: string | null;
+  /** Organizer switched this division off; the meet as a whole may still be open. */
+  registration_open?: boolean;
 }
 
 interface Meet {
@@ -66,6 +68,8 @@ const ERROR_MESSAGES: Record<string, string> = {
   DIVISION_NOT_FOUND: "Pick the division you're racing in.",
   DIVISION_NOT_OPEN:
     "That division isn't open yet — it will appear on the timing tent screen when the race is up.",
+  DIVISION_CLOSED:
+    "Registration for that division is closed. Ask at the timing tent and they can open it again.",
   NAME_REQUIRED: "Please enter your name.",
   CODE_TAKEN:
     "That athlete code already belongs to another runner. Leave it blank and we'll assign you a new one.",
@@ -122,10 +126,14 @@ watchEffect(async () => {
   // Keep the runner's pick when it survives a reload; otherwise land on a division
   // they can actually still join (in progress first, then one that hasn't started).
   if (!m.divisions.some((d) => d.id === raceId.value)) {
+    // Land on a division they can actually join: open ones first, in progress
+    // ahead of not-yet-started.
+    const open = m.divisions.filter((d) => d.registration_open !== false);
+    const pool = open.length ? open : m.divisions;
     raceId.value =
-      m.divisions.find((d) => d.status === "running")?.id ??
-      m.divisions.find((d) => d.status === "ready")?.id ??
-      (m.divisions[0]?.id ?? "");
+      pool.find((d) => d.status === "running")?.id ??
+      pool.find((d) => d.status === "ready")?.id ??
+      (pool[0]?.id ?? "");
   }
   if (!signupCode.value) signupCode.value = readStoredSignupCode();
 
@@ -142,10 +150,14 @@ const selectedDivision = computed(
 );
 
 function divisionLabel(d: Division): string {
+  if (d.registration_open === false) return `${d.name} — registration closed`;
   if (d.status === "running") return `${d.name} — race in progress (you can still register)`;
   const when = startTimeLabel(d.starts_at);
   return when ? `${d.name} · ${when}` : d.name;
 }
+
+/** The organizer closed this one division; the rest of the meet may be wide open. */
+const divisionClosed = computed(() => selectedDivision.value?.registration_open === false);
 
 function startTimeLabel(iso: string | null): string {
   if (!iso) return "";
@@ -177,6 +189,10 @@ async function submit() {
   const claimedCode = normalizeCode(athleteCode.value);
   if (!raceId.value) {
     error.value = ERROR_MESSAGES.DIVISION_NOT_FOUND;
+    return;
+  }
+  if (divisionClosed.value) {
+    error.value = ERROR_MESSAGES.DIVISION_CLOSED;
     return;
   }
   if (!gender.value) {
@@ -345,6 +361,12 @@ async function copyCode() {
           >
             This race is being timed right now — register anyway, then show your code at the line.
           </span>
+          <span
+            v-if="divisionClosed"
+            class="mt-1.5 block text-xs text-amber-300"
+          >
+            Registration for this division is closed. Pick another division or ask at the timing tent.
+          </span>
         </label>
 
         <label class="block">
@@ -461,7 +483,7 @@ async function copyCode() {
 
         <button
           type="submit"
-          :disabled="busy"
+          :disabled="busy || divisionClosed"
           class="rounded-xl bg-brand-400 py-4 text-lg font-black text-ink-950 transition hover:bg-brand-300 disabled:opacity-50"
         >
           {{ busy ? "Registering…" : "Register" }}
