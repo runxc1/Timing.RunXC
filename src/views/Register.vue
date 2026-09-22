@@ -21,6 +21,8 @@ interface Meet {
   meet_date: string | null;
   registration_locked: boolean;
   signup_required: boolean;
+  /** Sticker-first meets: the runner must bring a code to registration. */
+  athlete_code_required: boolean;
   divisions: Division[];
 }
 
@@ -68,6 +70,8 @@ const ERROR_MESSAGES: Record<string, string> = {
   CODE_TAKEN:
     "That athlete code already belongs to another runner. Leave it blank and we'll assign you a new one.",
   CODE_LENGTH: "Athlete codes are up to 8 characters — or leave it blank and we'll assign one.",
+  CODE_REQUIRED:
+    "This meet hands out the QR code before race day. Type the code from your sticker or card so we can match your finish.",
   SIGNUP_CODE_REQUIRED:
     "This meet needs a signup code. It's printed on the flyer — ask your coach or the timing tent.",
   GENDER_INVALID: "Pick Boys or Girls so we can score you in the right competition.",
@@ -163,6 +167,9 @@ const meetDateLabel = computed(() => {
 /** Whether this meet insists on a signup code (default true for older meets). */
 const codeRequired = computed(() => meet.value?.signup_required !== false);
 
+/** Whether the runner must bring their own QR/athlete code to register. */
+const athleteCodeRequired = computed(() => meet.value?.athlete_code_required === true);
+
 async function submit() {
   if (busy.value) return;
   error.value = "";
@@ -178,6 +185,10 @@ async function submit() {
   }
   if (codeRequired.value && !code) {
     error.value = ERROR_MESSAGES.SIGNUP_CODE_INVALID;
+    return;
+  }
+  if (athleteCodeRequired.value && !claimedCode) {
+    error.value = ERROR_MESSAGES.CODE_REQUIRED;
     return;
   }
   signupCode.value = code;
@@ -418,20 +429,31 @@ async function copyCode() {
         </label>
 
         <label class="block">
-          <span class="text-xs font-bold uppercase tracking-wider text-slate-400">Athlete code</span>
+          <span class="text-xs font-bold uppercase tracking-wider text-slate-400">
+            Athlete code
+            <span v-if="!athleteCodeRequired" class="normal-case text-slate-600">(optional)</span>
+            <span v-else class="text-brand-400">*</span>
+          </span>
           <input
             v-model="athleteCode"
+            :required="athleteCodeRequired"
             @blur="athleteCode = normalizeCode(athleteCode)"
             autocapitalize="characters"
             autocomplete="off"
             spellcheck="false"
             maxlength="10"
-            placeholder="OPTIONAL"
+            :placeholder="athleteCodeRequired ? 'XXXX' : 'OPTIONAL'"
             class="mt-1.5 w-full rounded-xl border border-ink-700 bg-ink-950 px-4 py-3 text-center font-mono text-2xl font-bold uppercase tracking-[0.3em] text-brand-300 placeholder:text-ink-600 focus:border-brand-400 focus:outline-none"
           />
           <span class="mt-1.5 block text-xs text-slate-500">
-            Leave blank to be assigned a new code. Type the code from your card or QR if you have one — that
-            claims the finish already recorded for it.
+            <template v-if="athleteCodeRequired">
+              The code printed on your sticker or card — exactly as it appears, so the finish line can match
+              you up.
+            </template>
+            <template v-else>
+              Leave blank to be assigned a new code. Type the code from your card or QR if you have one — that
+              claims the finish already recorded for it.
+            </template>
           </span>
         </label>
 

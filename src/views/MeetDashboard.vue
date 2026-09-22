@@ -28,6 +28,7 @@ interface MeetInfo {
   scanner_code: string | null;
   registration_locked_at: string | null;
   signup_required: boolean;
+  athlete_code_required: boolean;
 }
 const meetInfo = ref<MeetInfo | null>(null);
 type Admin = { id: string; email: string; name: string | null; role: string; code: string };
@@ -54,8 +55,10 @@ function showToast(msg: string) {
   }, 4000);
 }
 
+// Single literal: supabase-js parses the select list at the type level, so a
+// concatenated string would widen to `string` and lose the row type.
 const MEET_COLS =
-  "id, name, meet_date, admin_code, code, signup_code, timer_code, scanner_code, registration_locked_at, signup_required";
+  "id, name, meet_date, admin_code, code, signup_code, timer_code, scanner_code, registration_locked_at, signup_required, athlete_code_required";
 
 async function load() {
   error.value = "";
@@ -393,6 +396,33 @@ async function toggleSignupRequired() {
   }
 }
 
+// --- require an athlete code ------------------------------------------------
+const savingCodeReq = ref(false);
+async function toggleAthleteCodeRequired() {
+  const m = meetInfo.value;
+  if (!m || savingCodeReq.value) return;
+  savingCodeReq.value = true;
+  try {
+    const next = !m.athlete_code_required;
+    const { error: err } = await client.value
+      .from("meets")
+      .update({ athlete_code_required: next })
+      .eq("id", m.id);
+    if (err) {
+      showToast(err.message);
+      return;
+    }
+    m.athlete_code_required = next;
+    showToast(
+      next
+        ? "Runners must now enter the code from their sticker or card."
+        : "Runners can register without a code — we hand one out.",
+    );
+  } finally {
+    savingCodeReq.value = false;
+  }
+}
+
 const showQr = ref(false);
 const qrImages = ref<Record<string, string>>({});
 async function toggleQr() {
@@ -431,6 +461,48 @@ async function finalizeAll() {
   await load();
 }
 
+/** Undo a finalize: races return to the stopwatch, registration opens again. */
+const reopening = ref(false);
+async function reopenMeet() {
+  const m = meetInfo.value;
+  if (!m || reopening.value) return;
+  reopening.value = true;
+  error.value = "";
+  const { data, error: err } = await client.value.rpc("reopen_meet", { p_meet_id: m.id });
+  reopening.value = false;
+  if (err) {
+    error.value = err.message.includes("NOT_ALLOWED")
+      ? "Your admin code can't re-open this meet."
+      : err.message;
+    return;
+  }
+  const n = (data as { reopened_races?: number } | null)?.reopened_races ?? 0;
+  showToast(`Re-opened ${n} ${n === 1 ? "race" : "races"} — registration is back on.`);
+  await load();
+}
+
+// --- registration lock on its own ------------------------------------------
+const locking = ref(false);
+async function setRegistrationLock(locked: boolean) {
+  const m = meetInfo.value;
+  if (!m || locking.value) return;
+  locking.value = true;
+  error.value = "";
+  const { error: err } = await client.value.rpc("set_registration_lock", {
+    p_meet_id: m.id,
+    p_locked: locked,
+  });
+  locking.value = false;
+  if (err) {
+    error.value = err.message.includes("NOT_ALLOWED")
+      ? "Your admin code can't change registration for this meet."
+      : err.message;
+    return;
+  }
+  showToast(locked ? "Registration closed — links stop accepting runners." : "Registration is open again.");
+  await load();
+}
+
 /** "Starts 9:30 AM", or with a date when the race is on another day. */
 function startLabel(iso: string): string {
   const d = new Date(iso);
@@ -449,6 +521,9 @@ const lockedLabel = computed(() => {
 
 const pendingFinalizations = computed(
   () => races.value.filter((r) => r.status !== "finalized").length,
+);
+const finalizedCount = computed(
+  () => races.value.filter((r) => r.status === "finalized").length,
 );
 
 const statusColors: Record<string, string> = {
@@ -627,6 +702,34 @@ const statusColors: Record<string, string> = {
             <span
               class="absolute top-1 size-5 rounded-full bg-white transition-all"
               :class="meetInfo.signup_required ? 'left-6' : 'left-1'"
+            />
+          </button>
+        </div>
+
+        <!-- Athlete / QR code requirement -->
+        <div class="mt-3 flex items-center justify-between gap-3 rounded-xl border border-ink-800 bg-ink-950 px-4 py-3">
+          <div>
+            <p class="text-[10px] font-black uppercase tracking-wider text-slate-500">QR / athlete code</p>
+            <p class="mt-0.5 text-xs text-slate-400">
+              <template v-if="meetInfo.athlete_code_required">
+                Required — runners type the code from their sticker or card.
+              </template>
+              <template v-else>
+                Optional — leave it blank and we hand out a new code.
+              </template>
+            </p>
+          </div>
+          <button
+            role="switch"
+            :aria-checked="meetInfo.athlete_code_required"
+            class="relative h-7 w-12 shrink-0 rounded-full transition-colors"
+            :class="meetInfo.athlete_code_required ? 'bg-brand-400' : 'bg-ink-700'"
+            :disabled="savingCodeReq"
+            @click="toggleAthleteCodeRequired"
+          >
+            <span
+              class="absolute top-1 size-5 rounded-full bg-white transition-all"
+              :class="meetInfo.athlete_code_required ? 'left-6' : 'left-1'"
             />
           </button>
         </div>
@@ -864,18 +967,49 @@ const statusColors: Record<string, string> = {
       <section class="mt-6 rounded-2xl border border-red-500/25 bg-ink-900 p-5">
         <h2 class="text-sm font-black uppercase tracking-wider text-red-300">Finish the meet</h2>
         <p class="mt-1 text-xs text-slate-400">
-          Finalizes every race in one move and closes registration for good. Results stay online.
+          Finalizing posts every result and closes registration. Both can be undone — a late runner or a
+          corrected time is one button away.
         </p>
         <p v-if="locked" class="mt-3 text-sm text-violet-300">
-          Locked {{ lockedLabel }} — registration is closed and all times are frozen.
+          Locked {{ lockedLabel }} — the signup link is closed.
         </p>
-        <button
-          v-else
-          class="mt-3 rounded-xl border border-red-500/50 bg-red-500/10 px-4 py-2.5 text-sm font-black text-red-300 hover:bg-red-500/20"
-          @click="confirmFinalize = true"
-        >
-          Finalize all results
-        </button>
+        <div class="mt-3 flex flex-wrap items-center gap-2">
+          <button
+            v-if="!locked"
+            class="rounded-xl border border-red-500/50 bg-red-500/10 px-4 py-2.5 text-sm font-black text-red-300 hover:bg-red-500/20"
+            @click="confirmFinalize = true"
+          >
+            Finalize all results
+          </button>
+          <button
+            v-if="locked || finalizedCount > 0"
+            class="rounded-xl bg-brand-400 px-4 py-2.5 text-sm font-black text-ink-950 hover:bg-brand-300 disabled:opacity-50"
+            :disabled="reopening"
+            @click="reopenMeet"
+          >
+            {{ reopening ? "Re-opening…" : finalizedCount > 0 ? `Re-open meet (${finalizedCount} finalized)` : "Re-open meet" }}
+          </button>
+          <button
+            v-if="locked"
+            class="rounded-xl border border-ink-700 px-4 py-2.5 text-sm font-bold text-slate-200 hover:bg-ink-800 disabled:opacity-50"
+            :disabled="locking"
+            @click="setRegistrationLock(false)"
+          >
+            {{ locking ? "Opening…" : "Open registration only" }}
+          </button>
+          <button
+            v-else
+            class="rounded-xl border border-ink-700 px-4 py-2.5 text-sm font-bold text-slate-200 hover:bg-ink-800 disabled:opacity-50"
+            :disabled="locking"
+            @click="setRegistrationLock(true)"
+          >
+            {{ locking ? "Closing…" : "Close registration now" }}
+          </button>
+        </div>
+        <p class="mt-2 text-[11px] text-slate-500">
+          Re-opening puts finalized races back on the stopwatch and lets athletes register again; closing or
+          opening registration alone leaves race results as they are.
+        </p>
       </section>
       </template>
     </main>
@@ -898,7 +1032,7 @@ const statusColors: Record<string, string> = {
         <ul class="mt-3 list-disc space-y-1 pl-5 text-xs text-slate-500">
           <li>{{ pendingFinalizations }} {{ pendingFinalizations === 1 ? "race" : "races" }} move to finalized</li>
           <li>Signup links stop accepting athletes</li>
-          <li>Results stay online, read-only</li>
+          <li>Results stay online — re-open the meet if something still needs fixing</li>
         </ul>
         <div class="mt-5 flex gap-2">
           <button

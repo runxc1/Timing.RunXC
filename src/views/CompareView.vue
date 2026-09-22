@@ -142,23 +142,16 @@ async function mergeTap(tap: TimerTap) {
   // Anchor after the last official finisher who beat this time.
   const before = slots.value.filter((s) => s.t0_offset_ms != null && s.t0_offset_ms < tap.t0_offset_ms);
   const anchor = before.length ? before[before.length - 1] : null;
-  const { data, error: err } = await admin.value.rpc("insert_slot_relative", {
+  const { error: err } = await admin.value.rpc("insert_slot_relative", {
     p_race_id: raceId,
     p_anchor_slot_id: anchor?.id ?? null,
     p_side: "after",
     p_code: null,
     p_device_id: `backup-${tap.device_id.slice(0, 8)}`,
+    // The backup watch's exact time, not an interpolated guess.
+    p_t0_offset_ms: tap.t0_offset_ms,
   });
-  if (err || !data) {
-    error.value = err?.message ?? "Could not insert the finisher.";
-    busy.value = "";
-    return;
-  }
-  // Use the backup watch's exact time instead of the interpolated guess.
-  const newId = (data as { slot_id?: string }).slot_id;
-  if (newId) {
-    await admin.value.from("finish_slots").update({ t0_offset_ms: tap.t0_offset_ms }).eq("id", newId);
-  }
+  if (err) error.value = err.message ?? "Could not insert the finisher.";
   busy.value = "";
   await load();
 }
@@ -200,11 +193,49 @@ function parseClock(raw: string): number | null {
 }
 
 // --- add a runner who never got a slot at all ---
+// Every official row carries a "+" that opens this dialog anchored to that
+// record and asks whether the new finisher belongs above or below it, so a
+// finish the timer missed lands in exactly the right place. The header button
+// opens the same dialog with no anchor, which appends at the end.
 const showAdd = ref(false);
 const addCode = ref("");
 const addTime = ref("");
 const addAnchorId = ref<string>("");
+const addSide = ref<"before" | "after">("after");
 const addError = ref("");
+
+const addAnchor = computed(() => slots.value.find((s) => s.id === addAnchorId.value) ?? null);
+
+/** Who the dialog is talking about, for the "next to place 7 …" caption. */
+const addAnchorLabel = computed(() => {
+  const a = addAnchor.value;
+  if (!a) return "";
+  const who = a.athlete_id ? athletes.value.get(a.athlete_id)?.name || athletes.value.get(a.athlete_id)?.code : "open slot";
+  return `${who} · ${formatClock(a.t0_offset_ms)}`;
+});
+
+/** Place the new runner would take if inserted on this side of the anchor. */
+function sidePlace(side: "before" | "after"): number | null {
+  const a = addAnchor.value;
+  if (!a) return slots.value.length + 1;
+  return side === "before" ? a.seq : a.seq + 1;
+}
+
+function openAddAt(slot: Slot, side: "before" | "after") {
+  addAnchorId.value = slot.id;
+  addSide.value = side;
+  addError.value = "";
+  showAdd.value = true;
+}
+
+/** Header button: no anchor means "add as the last place". */
+function openAddAtEnd() {
+  addAnchorId.value = "";
+  addSide.value = "after";
+  addError.value = "";
+  showAdd.value = true;
+}
+
 async function addRunner() {
   addError.value = "";
   const code = normalizeCode(addCode.value);
@@ -217,29 +248,31 @@ async function addRunner() {
     addError.value = "Time must look like 12:34.5";
     return;
   }
-  const anchor = addAnchorId.value
-    ? slots.value.find((s) => s.id === addAnchorId.value) ?? null
-    : null;
-  const { data, error: err } = await admin.value.rpc("insert_slot_relative", {
+  const { error: err } = await admin.value.rpc("insert_slot_relative", {
     p_race_id: raceId,
-    p_anchor_slot_id: anchor?.id ?? null,
-    p_side: "after",
+    p_anchor_slot_id: addAnchor.value?.id ?? null,
+    p_side: addSide.value,
     p_code: code || null,
     p_device_id: "admin-edit",
+    p_t0_offset_ms: ms,
   });
-  if (err || !data) {
-    addError.value = err?.message ?? "Could not add the runner.";
+  if (err) {
+    addError.value = err.message.includes("CODE_OTHER_DIVISION")
+      ? "That code belongs to another division in this meet."
+      : (err.message ?? "Could not add the runner.");
     return;
   }
-  const newId = (data as { slot_id?: string }).slot_id;
-  if (newId && ms != null) {
-    await admin.value.from("finish_slots").update({ t0_offset_ms: ms }).eq("id", newId);
-  }
+  closeAdd();
+  await load();
+}
+
+function closeAdd() {
   showAdd.value = false;
   addCode.value = "";
   addTime.value = "";
   addAnchorId.value = "";
-  await load();
+  addSide.value = "after";
+  addError.value = "";
 }
 
 // --- remove a stray open slot ---
@@ -289,7 +322,7 @@ const timerLabel = (deviceId: string) => deviceId.slice(0, 4).toUpperCase();
           >{{ raceInfo.status.replace('_', ' ') }}</span>
           <button
             class="ml-auto rounded-lg bg-brand-400 px-4 py-2 text-xs font-black text-ink-950"
-            @click="showAdd = true"
+            @click="openAddAtEnd"
           >
             + Add runner
           </button>
@@ -348,6 +381,12 @@ const timerLabel = (deviceId: string) => deviceId.slice(0, 4).toUpperCase();
                   <template v-else>{{ (s.status ?? '').toUpperCase() }}</template>
                 </span>
                 <button
+                  class="grid size-7 shrink-0 place-items-center rounded-lg border border-ink-700 text-base font-black leading-none text-brand-300 hover:border-brand-400 hover:bg-brand-400/10"
+                  :title="`Add a runner next to place ${s.seq}`"
+                  :aria-label="`Add a runner next to place ${s.seq}`"
+                  @click="openAddAt(s, 'after')"
+                >+</button>
+                <button
                   v-if="s.status === 'open'"
                   class="rounded px-2 py-1 text-xs font-bold text-red-400 hover:bg-red-500/10"
                   :disabled="busy === s.id"
@@ -400,10 +439,43 @@ const timerLabel = (deviceId: string) => deviceId.slice(0, 4).toUpperCase();
     </template>
 
     <!-- Add runner dialog -->
-    <div v-if="showAdd" class="fixed inset-0 z-50 grid place-items-center bg-black/70 p-6" @click.self="showAdd = false">
+    <div v-if="showAdd" class="fixed inset-0 z-50 grid place-items-center bg-black/70 p-6" @click.self="closeAdd()">
       <div class="w-full max-w-sm rounded-2xl border border-ink-700 bg-ink-900 p-6">
-        <h3 class="font-display text-lg font-black">Add a runner</h3>
-        <p class="mt-1 text-sm text-slate-400">For someone who finished but has no slot at all.</p>
+        <div class="flex items-start justify-between gap-3">
+          <h3 class="font-display text-lg font-black">Add a runner</h3>
+          <button class="rounded px-2 py-1 text-sm font-bold text-slate-400 hover:bg-ink-700" @click="closeAdd()">×</button>
+        </div>
+        <p class="mt-1 text-sm text-slate-400">
+          <template v-if="addAnchor">
+            Next to place {{ addAnchor.seq }} — {{ addAnchorLabel }}
+          </template>
+          <template v-else>For someone who finished but has no slot at all.</template>
+        </p>
+
+        <!-- Above or below the record this dialog was opened from -->
+        <div v-if="addAnchor" class="mt-4">
+          <span class="text-xs font-bold uppercase tracking-wider text-slate-500">Position</span>
+          <div class="mt-1.5 grid grid-cols-2 gap-2">
+            <button
+              v-for="opt in (['before', 'after'] as const)"
+              :key="opt"
+              type="button"
+              class="rounded-xl border px-3 py-2.5 text-sm font-bold transition"
+              :class="
+                addSide === opt
+                  ? 'border-brand-400 bg-brand-400/15 text-brand-300'
+                  : 'border-ink-700 bg-ink-950 text-slate-400 hover:border-ink-600'
+              "
+              @click="addSide = opt"
+            >
+              {{ opt === "before" ? "Above" : "Below" }}
+              <span class="block text-[10px] font-bold uppercase tracking-wider opacity-70">
+                place {{ sidePlace(opt) }}
+              </span>
+            </button>
+          </div>
+        </div>
+
         <label class="mt-4 block text-xs font-bold uppercase tracking-wider text-slate-500">Athlete code (optional)</label>
         <input
           v-model="addCode"
@@ -412,17 +484,12 @@ const timerLabel = (deviceId: string) => deviceId.slice(0, 4).toUpperCase();
           placeholder="AB12"
           class="mt-1 w-full rounded-xl border border-ink-700 bg-ink-950 px-4 py-2.5 font-display text-lg font-bold tracking-[0.25em] text-brand-300 focus:border-brand-400 focus:outline-none"
         />
-        <label class="mt-3 block text-xs font-bold uppercase tracking-wider text-slate-500">Insert after</label>
-        <select
-          v-model="addAnchorId"
-          class="mt-1 w-full rounded-xl border border-ink-700 bg-ink-950 px-3 py-2.5 text-sm focus:border-brand-400 focus:outline-none"
-        >
-          <option value="">— start of the race (first place) —</option>
-          <option v-for="s in slots" :key="s.id" :value="s.id">
-            Place {{ s.seq }} · {{ formatClock(s.t0_offset_ms) }} · {{ s.athlete_id ? athletes.get(s.athlete_id)?.name || athletes.get(s.athlete_id)?.code : 'open' }}
-          </option>
-        </select>
-        <label class="mt-3 block text-xs font-bold uppercase tracking-wider text-slate-500">Time (optional)</label>
+        <label class="mt-3 block text-xs font-bold uppercase tracking-wider text-slate-500">
+          Time
+          <span class="normal-case font-normal text-slate-600">
+            {{ addAnchor ? "(blank = halfway between the neighbours)" : "(blank = just after the last finisher)" }}
+          </span>
+        </label>
         <input
           v-model="addTime"
           placeholder="12:34.5"
@@ -431,7 +498,7 @@ const timerLabel = (deviceId: string) => deviceId.slice(0, 4).toUpperCase();
         <p v-if="addError" class="mt-2 text-sm text-amber-300">{{ addError }}</p>
         <div class="mt-4 flex gap-2">
           <button class="flex-1 rounded-xl bg-brand-400 px-4 py-2.5 text-sm font-black text-ink-950" @click="addRunner">Add</button>
-          <button class="flex-1 rounded-xl bg-ink-800 px-4 py-2.5 text-sm font-bold text-slate-300 hover:bg-ink-700" @click="showAdd = false">Cancel</button>
+          <button class="flex-1 rounded-xl bg-ink-800 px-4 py-2.5 text-sm font-bold text-slate-300 hover:bg-ink-700"           @click="closeAdd()">Cancel</button>
         </div>
       </div>
     </div>
