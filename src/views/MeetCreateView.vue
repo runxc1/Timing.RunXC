@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import { useRouter } from "vue-router";
 import { makeClient, supabase } from "../lib/supabase";
 import { genCode, normalizeCode } from "../lib/codes";
+import DateField from "../components/DateField.vue";
 import { useSession } from "../stores/session";
 
 const router = useRouter();
@@ -380,9 +381,8 @@ async function create() {
       </label>
       <label class="block">
         <span class="text-xs font-bold uppercase tracking-wider text-slate-400">Date</span>
-        <input
+        <DateField
           v-model="meetDate"
-          type="date"
           class="mt-1.5 w-full rounded-xl border border-ink-700 bg-ink-950 px-4 py-3 text-sm focus:border-brand-400 focus:outline-none"
         />
       </label>

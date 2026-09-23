@@ -291,7 +291,7 @@ const meetDateLabel = computed(() => {
   if (!raw) return "";
   const [y, mo, d] = String(raw).split("-").map(Number);
   if (!y || !mo || !d) return String(raw);
-  return new Date(y, mo - 1, d).toLocaleDateString([], {
+  return new Date(y, mo - 1, d).toLocaleDateString("en-US", {
     weekday: "short",
     month: "short",
     day: "numeric",
@@ -306,7 +306,7 @@ function statusBadge(status: string): { label: string; cls: string } {
 
 function startedLabel(iso: string | null): string {
   if (!iso) return "";
-  return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return new Date(iso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 }
 
 async function copyRegisterLink() {

@@ -5,6 +5,7 @@ import { makeClient } from "../lib/supabase";
 import { useSession } from "../stores/session";
 import { formatCode, genAthleteCode } from "../lib/codes";
 import { isoToLocalInput, toIsoOrNull } from "../lib/time";
+import DateTimeField from "../components/DateTimeField.vue";
 
 const route = useRoute();
 const session = useSession();
@@ -221,11 +222,11 @@ function copyLink(text: string, key: string) {
         </label>
         <label class="block">
           <span class="text-xs font-bold uppercase tracking-wider text-slate-400">Scheduled start</span>
-          <input
-            :value="isoToLocalInput(race.scheduled_start)"
-            type="datetime-local"
-            class="mt-1.5 w-full rounded-xl border border-ink-700 bg-ink-950 px-4 py-2.5 text-sm focus:border-brand-400 focus:outline-none"
-            @input="race.scheduled_start = toIsoOrNull(($event.target as HTMLInputElement).value)"
+          <DateTimeField
+            :model-value="isoToLocalInput(race.scheduled_start)"
+            class="mt-1.5 flex w-full"
+            input-class="min-w-[7.5rem] flex-1 rounded-xl border border-ink-700 bg-ink-950 px-4 py-2.5 text-sm focus:border-brand-400 focus:outline-none"
+            @update:model-value="race.scheduled_start = toIsoOrNull($event)"
           />
         </label>
         <div class="grid grid-cols-2 gap-3">

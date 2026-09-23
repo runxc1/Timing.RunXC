@@ -16,7 +16,7 @@ export function formatClock(ms: number | null | undefined): string {
 /** ISO timestamp -> local "h:mm:ss AM/PM" */
 export function formatTimeOfDay(iso: string | null | undefined): string {
   if (!iso) return "—";
-  return new Date(iso).toLocaleTimeString([], {
+  return new Date(iso).toLocaleTimeString("en-US", {
     hour: "numeric",
     minute: "2-digit",
     second: "2-digit",

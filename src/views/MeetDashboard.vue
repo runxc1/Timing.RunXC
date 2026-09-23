@@ -5,6 +5,7 @@ import QRCode from "qrcode";
 import { makeClient } from "../lib/supabase";
 import { formatCode, normalizeCode } from "../lib/codes";
 import { defaultStartInput, toIsoOrNull } from "../lib/time";
+import DateTimeField from "../components/DateTimeField.vue";
 import { useSession } from "../stores/session";
 
 const session = useSession();
@@ -545,16 +546,16 @@ async function setRegistrationLock(locked: boolean) {
 /** "Starts 9:30 AM", or with a date when the race is on another day. */
 function startLabel(iso: string): string {
   const d = new Date(iso);
-  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const time = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
   return d.toDateString() === new Date().toDateString()
     ? `Starts ${time}`
-    : `${d.toLocaleDateString([], { month: "short", day: "numeric" })} · ${time}`;
+    : `${d.toLocaleDateString("en-US", { month: "short", day: "numeric" })} · ${time}`;
 }
 
 const lockedLabel = computed(() => {
   const iso = meetInfo.value?.registration_locked_at;
   return iso
-    ? new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+    ? new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
     : "";
 });
 
@@ -1003,11 +1004,9 @@ const statusColors: Record<string, string> = {
             class="flex-1 rounded-lg border border-ink-700 bg-ink-950 px-3 py-2.5 text-sm focus:border-brand-400 focus:outline-none"
             @keyup.enter="createRace"
           />
-          <input
+          <DateTimeField
             v-model="raceTime"
-            type="datetime-local"
-            aria-label="Scheduled start"
-            class="rounded-lg border border-ink-700 bg-ink-950 px-3 py-2.5 text-sm focus:border-brand-400 focus:outline-none"
+            input-class="w-32 rounded-lg border border-ink-700 bg-ink-950 px-3 py-2.5 text-sm focus:border-brand-400 focus:outline-none"
           />
           <button
             class="rounded-lg bg-brand-400 px-5 py-2.5 text-sm font-black text-ink-950 hover:bg-brand-300 disabled:opacity-50"
