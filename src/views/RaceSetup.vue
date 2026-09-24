@@ -3,7 +3,7 @@ import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { makeClient } from "../lib/supabase";
 import { useSession } from "../stores/session";
-import { formatCode, genAthleteCode } from "../lib/codes";
+import { formatCode, genAthleteCode, normalizeCode } from "../lib/codes";
 import { isoToLocalInput, toIsoOrNull } from "../lib/time";
 import DateTimeField from "../components/DateTimeField.vue";
 
@@ -33,7 +33,15 @@ const meet = ref<{
   registration_locked_at: string | null;
 } | null>(null);
 const athletes = ref<
-  Array<{ id: string; code: string; name: string | null; grade: string | null; school_id: string | null; source: string }>
+  Array<{
+    id: string;
+    code: string;
+    name: string | null;
+    grade: string | null;
+    gender: string | null;
+    school_id: string | null;
+    source: string;
+  }>
 >([]);
 const schools = ref<Array<{ id: string; name: string }>>([]);
 const error = ref("");
@@ -71,10 +79,11 @@ async function load() {
   const [a, s] = await Promise.all([
     admin.value
       .from("athletes")
-      .select("id, code, name, grade, school_id, source")
+      .select("id, code, name, grade, gender, school_id, source")
       .eq("race_id", raceId.value)
       .order("code"),
-    admin.value.from("schools").select("id, name").order("name"),
+    // Only this meet's schools — otherwise the dropdown is every meet on the server.
+    admin.value.from("schools").select("id, name").eq("meet_id", data.meet_id).order("name"),
   ]);
   athletes.value = (a.data ?? []) as typeof athletes.value;
   schools.value = (s.data ?? []) as typeof schools.value;
@@ -207,6 +216,110 @@ async function importPool() {
   if (err) error.value = err.message;
   else await load();
   importing.value = false;
+}
+
+// --- correcting a registration ----------------------------------------------
+
+/** Runners mistype their name, pick the wrong school/grade/gender or copy a code badly. */
+const edit = ref<{
+  id: string;
+  name: string;
+  code: string;
+  startCode: string;
+  schoolId: string;
+  grade: string;
+  gender: "" | "M" | "F";
+} | null>(null);
+const editError = ref("");
+const editBusy = ref(false);
+const editNote = ref("");
+
+/** Signup only offers the grades this division opened, so corrections use the same list. */
+const gradeChoices = computed(() =>
+  [...(race.value?.allowed_grades ?? DEFAULT_GRADES)].sort((a, b) => a - b).map(String),
+);
+
+const EDIT_ERRORS: Record<string, string> = {
+  ATHLETE_NOT_FOUND: "That registration is gone — reload the page.",
+  NOT_ALLOWED: "The admin code in this browser isn't for this meet, so nothing was changed.",
+  NAME_REQUIRED: "Enter the runner's name.",
+  CODE_INVALID: "Athlete codes use letters and numbers only.",
+  CODE_LENGTH: "Athlete codes are up to 8 characters.",
+  CODE_TAKEN: "Another runner in this meet already has that code.",
+  GRADE_NOT_ALLOWED: "That grade isn't one this division offers — pick from the list.",
+  GRADE_INVALID: "Grade should be a number like 8 or 11.",
+  GENDER_INVALID: "Pick Boys or Girls.",
+  SCHOOL_NOT_FOUND: "Pick one of this meet's schools.",
+};
+
+function editMessageFor(msg: string): string {
+  const key = Object.keys(EDIT_ERRORS).find((k) => msg.includes(k));
+  return key ? EDIT_ERRORS[key] : msg;
+}
+
+type RosterRow = typeof athletes.value[number];
+
+function startEdit(a: RosterRow) {
+  edit.value = {
+    id: a.id,
+    name: a.name ?? "",
+    code: a.code,
+    startCode: a.code,
+    schoolId: a.school_id ?? "",
+    grade: a.grade ?? "",
+    gender: (a.gender === "M" || a.gender === "F" ? a.gender : "") as "" | "M" | "F",
+  };
+  editError.value = "";
+}
+
+function closeEdit() {
+  edit.value = null;
+  editError.value = "";
+}
+
+async function saveEdit() {
+  const form = edit.value;
+  if (!form || editBusy.value) return;
+  editError.value = "";
+  const code = normalizeCode(form.code);
+  if (!form.name.trim()) {
+    editError.value = EDIT_ERRORS.NAME_REQUIRED;
+    return;
+  }
+  if (!code) {
+    editError.value = "Every runner needs a code — that's what the finish line scans.";
+    return;
+  }
+  if (code.length > 8) {
+    editError.value = EDIT_ERRORS.CODE_LENGTH;
+    return;
+  }
+
+  editBusy.value = true;
+  const { data, error: err } = await admin.value.rpc("admin_update_athlete", {
+    p_athlete_id: form.id,
+    p_name: form.name.trim(),
+    p_school_id: form.schoolId || null,
+    p_clear_school: !form.schoolId,
+    p_grade: form.grade,
+    p_gender: form.gender,
+    p_code: code,
+  });
+  editBusy.value = false;
+  if (err) {
+    editError.value = editMessageFor(err.message);
+    return;
+  }
+
+  const row = data as { finish_count?: number } | null;
+  const renamed = code !== form.startCode;
+  const slots = Number(row?.finish_count ?? 0);
+  editNote.value =
+    renamed && slots > 0
+      ? `Saved. ${slots} finish ${slots === 1 ? "record now sits" : "records now sit"} under ${code}.`
+      : "Saved.";
+  edit.value = null;
+  await load();
 }
 
 // --- share links -------------------------------------------------------------
@@ -472,18 +585,104 @@ function copyLink(text: string, key: string) {
       <!-- Roster -->
       <section class="mt-4 rounded-2xl border border-ink-800 bg-ink-900 p-5">
         <h2 class="font-bold">Registered athletes <span class="text-slate-500">({{ registered.length }})</span></h2>
+        <p v-if="editNote" class="mt-1 text-xs text-emerald-300">{{ editNote }}</p>
         <ul class="mt-3 divide-y divide-ink-800">
           <li v-for="a in registered" :key="a.id" class="flex items-center gap-3 py-2 text-sm">
             <span class="w-16 font-display font-bold tracking-wider text-brand-300">{{ a.code }}</span>
             <span class="flex-1 truncate">{{ a.name }}</span>
             <span class="text-slate-400">{{ schoolName(a.school_id) }}</span>
             <span class="w-8 text-right text-slate-500">{{ a.grade }}</span>
+            <span v-if="a.gender" class="w-12 text-right text-[10px] font-black uppercase tracking-wider text-slate-500">
+              {{ a.gender === "M" ? "Boys" : "Girls" }}
+            </span>
+            <button
+              class="shrink-0 rounded-lg border border-ink-700 px-2.5 py-1 text-[11px] font-bold text-slate-300 hover:bg-ink-800"
+              @click="startEdit(a)"
+            >
+              Edit
+            </button>
           </li>
           <li v-if="registered.length === 0" class="py-3 text-sm text-slate-500">
             No athletes yet — share the registration link above.
           </li>
         </ul>
       </section>
+      <!-- Correct a runner's own entry -->
+      <div v-if="edit" class="fixed inset-0 z-50 grid place-items-center bg-ink-950/85 p-5 backdrop-blur-sm" role="dialog" aria-modal="true" @click.self="closeEdit()">
+        <div class="w-full max-w-md rounded-2xl border border-ink-700 bg-ink-900 p-6">
+          <div class="flex items-start justify-between gap-3">
+            <h3 class="font-display text-lg font-black">Edit registration</h3>
+            <button class="rounded px-2 py-1 text-sm font-bold text-slate-400 hover:bg-ink-700" @click="closeEdit()">×</button>
+          </div>
+          <p class="mt-1 text-sm text-slate-400">
+            Fix a mistyped name, school, grade or code. Finish records follow the runner, so
+            correcting a code keeps their place.
+          </p>
+
+          <label class="mt-4 block text-xs font-bold uppercase tracking-wider text-slate-500">Name</label>
+          <input
+            v-model="edit.name"
+            class="mt-1 w-full rounded-xl border border-ink-700 bg-ink-950 px-4 py-2.5 text-sm focus:border-brand-400 focus:outline-none"
+          />
+
+          <label class="mt-3 block text-xs font-bold uppercase tracking-wider text-slate-500">Athlete code</label>
+          <input
+            v-model="edit.code"
+            autocapitalize="characters"
+            maxlength="8"
+            class="mt-1 w-full rounded-xl border border-ink-700 bg-ink-950 px-4 py-2.5 font-display text-lg font-bold tracking-[0.25em] text-brand-300 focus:border-brand-400 focus:outline-none"
+            @blur="edit.code = normalizeCode(edit.code)"
+          />
+
+          <label class="mt-3 block text-xs font-bold uppercase tracking-wider text-slate-500">School</label>
+          <select v-model="edit.schoolId" class="mt-1 w-full rounded-xl border border-ink-700 bg-ink-950 px-4 py-2.5 text-sm focus:border-brand-400 focus:outline-none">
+            <option value="">—</option>
+            <option v-for="s in schools" :key="s.id" :value="s.id">{{ s.name }}</option>
+          </select>
+
+          <div class="mt-3 grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs font-bold uppercase tracking-wider text-slate-500">Grade</label>
+              <select v-model="edit.grade" class="mt-1 w-full rounded-xl border border-ink-700 bg-ink-950 px-4 py-2.5 text-sm focus:border-brand-400 focus:outline-none">
+                <option value="">—</option>
+                <option v-for="g in gradeChoices" :key="g" :value="g">{{ g }}</option>
+              </select>
+            </div>
+            <div>
+              <span class="block text-xs font-bold uppercase tracking-wider text-slate-500">Gender</span>
+              <div class="mt-1 grid grid-cols-2 gap-2">
+                <button
+                  v-for="opt in ([['M', 'Boys'], ['F', 'Girls']] as const)"
+                  :key="opt[0]"
+                  type="button"
+                  class="rounded-xl border px-3 py-2.5 text-sm font-bold transition"
+                  :class="edit.gender === opt[0]
+                    ? 'border-brand-400 bg-brand-400/15 text-brand-300'
+                    : 'border-ink-700 bg-ink-950 text-slate-400 hover:border-ink-600'"
+                  @click="edit.gender = edit.gender === opt[0] ? '' : opt[0]"
+                >
+                  {{ opt[1] }}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <p v-if="editError" class="mt-3 text-sm text-amber-300">{{ editError }}</p>
+
+          <div class="mt-5 flex gap-2">
+            <button
+              class="flex-1 rounded-xl bg-brand-400 px-4 py-2.5 text-sm font-black text-ink-950 disabled:opacity-50"
+              :disabled="editBusy"
+              @click="saveEdit"
+            >
+              {{ editBusy ? "Saving…" : "Save changes" }}
+            </button>
+            <button class="rounded-xl border border-ink-700 px-4 py-2.5 text-sm font-bold text-slate-300 hover:bg-ink-800" @click="closeEdit()">
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
     </template>
   </main>
 </template>
