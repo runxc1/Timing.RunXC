@@ -20,6 +20,7 @@ const race = ref<{
   team_size: number;
   tiebreak_depth: number;
   registration_closed_at: string | null;
+  allowed_grades: number[] | null;
 } | null>(null);
 
 /** Codes belong to the parent meet: /meet/{code}/signup registers, /t/{timerCode} times. */
@@ -47,7 +48,7 @@ async function load() {
   if (!session.meetAdminCode) return;
   const { data, error: err } = await admin.value
     .from("races")
-    .select("id, meet_id, name, status, scheduled_start, team_size, tiebreak_depth, registration_closed_at")
+    .select("id, meet_id, name, status, scheduled_start, team_size, tiebreak_depth, registration_closed_at, allowed_grades")
     .eq("id", raceId.value)
     .maybeSingle();
   if (err) {
@@ -56,6 +57,7 @@ async function load() {
   }
   race.value = data as typeof race.value;
   if (!data) return;
+  if (!race.value?.allowed_grades?.length) race.value!.allowed_grades = [...DEFAULT_GRADES];
 
   const m = await admin.value
     .from("meets")
@@ -86,21 +88,67 @@ const schoolName = (id: string | null) =>
 const registered = computed(() => athletes.value.filter((a) => a.name));
 const pool = computed(() => athletes.value.filter((a) => !a.name));
 
+/** Grades 1–16 are legal; a division picks which of them its registrants may use. */
+const GRADE_RANGE = Array.from({ length: 16 }, (_, i) => i + 1);
+const DEFAULT_GRADES = [9, 10, 11, 12];
+const GRADE_PRESETS: Array<{ label: string; grades: number[] }> = [
+  { label: "9–12 (varsity)", grades: DEFAULT_GRADES },
+  { label: "1–8 (middle school)", grades: [1, 2, 3, 4, 5, 6, 7, 8] },
+  { label: "K–12", grades: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+  { label: "All 1–16", grades: GRADE_RANGE },
+];
+
+function gradeOn(grade: number) {
+  return race.value?.allowed_grades?.includes(grade) ?? false;
+}
+
+function toggleGrade(grade: number) {
+  if (!race.value) return;
+  const current = race.value.allowed_grades ?? [];
+  if (current.includes(grade)) {
+    // The CHECK constraint needs at least one grade, so the last chip won't budge.
+    if (current.length === 1) {
+      error.value = "Keep at least one grade selected.";
+      return;
+    }
+    race.value.allowed_grades = current.filter((g) => g !== grade);
+  } else {
+    race.value.allowed_grades = [...current, grade].sort((a, b) => a - b);
+  }
+  error.value = "";
+}
+
+function setGradePreset(grades: number[]) {
+  if (!race.value) return;
+  race.value.allowed_grades = [...grades].sort((a, b) => a - b);
+  error.value = "";
+}
+
+const gradeSummary = computed(() => {
+  const grades = [...(race.value?.allowed_grades ?? [])].sort((a, b) => a - b);
+  return grades.length ? grades.join(", ") : "—";
+});
+
 async function save() {
   if (!race.value || saving.value) return;
   saving.value = true;
-  const { error: err } = await admin.value
+  const { data, error: err } = await admin.value
     .from("races")
     .update({
       name: race.value.name,
       team_size: race.value.team_size,
       tiebreak_depth: race.value.tiebreak_depth,
       scheduled_start: race.value.scheduled_start,
+      allowed_grades: [...(race.value.allowed_grades ?? DEFAULT_GRADES)].sort((a, b) => a - b),
     })
-    .eq("id", race.value.id);
+    .eq("id", race.value.id)
+    .select("id");
   saving.value = false;
   if (err) error.value = err.message;
-  else {
+  else if (!data?.length) {
+    // RLS silently skips rows this browser's admin code can't touch.
+    error.value = "Nothing was saved — the admin code in this browser isn't for this meet. Re-enter it from the meet page.";
+  } else {
     savedFlash.value = true;
     setTimeout(() => (savedFlash.value = false), 1500);
   }
@@ -229,6 +277,42 @@ function copyLink(text: string, key: string) {
             @update:model-value="race.scheduled_start = toIsoOrNull($event)"
           />
         </label>
+
+        <!-- Which grades this division offers at signup -->
+        <div class="sm:col-span-2">
+          <span class="text-xs font-bold uppercase tracking-wider text-slate-400">Grades accepted</span>
+          <p class="mt-1 text-[11px] leading-snug text-slate-500">
+            Grade choices offered on this division's signup page. Default is 9–12.
+          </p>
+          <div class="mt-2 flex flex-wrap gap-1.5">
+            <button
+              v-for="g in GRADE_RANGE"
+              :key="g"
+              type="button"
+              class="h-9 w-9 rounded-lg border text-sm font-bold transition"
+              :class="gradeOn(g)
+                ? 'border-brand-400/60 bg-brand-400/20 text-brand-200'
+                : 'border-ink-700 bg-ink-950 text-slate-500 hover:border-ink-600 hover:text-slate-300'"
+              :aria-pressed="gradeOn(g)"
+              @click="toggleGrade(g)"
+            >
+              {{ g }}
+            </button>
+          </div>
+          <div class="mt-2 flex flex-wrap items-center gap-1.5">
+            <button
+              v-for="preset in GRADE_PRESETS"
+              :key="preset.label"
+              type="button"
+              class="rounded-lg border border-ink-700 px-2.5 py-1 text-[11px] font-bold text-slate-400 hover:bg-ink-800 hover:text-slate-200"
+              @click="setGradePreset(preset.grades)"
+            >
+              {{ preset.label }}
+            </button>
+            <span class="ml-1 text-[11px] text-slate-500">Offering: <span class="font-semibold text-slate-300">{{ gradeSummary }}</span></span>
+          </div>
+        </div>
+
         <div class="grid grid-cols-2 gap-3">
           <label class="block">
             <span class="text-xs font-bold uppercase tracking-wider text-slate-400">Scoring (top)</span>

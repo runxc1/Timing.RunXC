@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watchEffect } from "vue";
+import { computed, ref, watch, watchEffect } from "vue";
 import { useRoute } from "vue-router";
 import QRCode from "qrcode";
 import { supabase, makeClient } from "../lib/supabase";
@@ -12,6 +12,8 @@ interface Division {
   starts_at: string | null;
   /** Organizer switched this division off; the meet as a whole may still be open. */
   registration_open?: boolean;
+  /** Grade numbers this division offers, e.g. [9,10,11,12]. */
+  allowed_grades?: number[] | null;
 }
 
 interface Meet {
@@ -56,7 +58,8 @@ const done = ref<{ code: string; name: string; raceName: string } | null>(null);
 const doneQr = ref("");
 const copied = ref(false);
 
-const GRADES = ["9", "10", "11", "12"];
+/** Fallback when a division predates grade lists. */
+const DEFAULT_GRADES = [9, 10, 11, 12];
 
 /** Backend error codes -> human copy, shown inline next to the form. */
 const ERROR_MESSAGES: Record<string, string> = {
@@ -79,6 +82,9 @@ const ERROR_MESSAGES: Record<string, string> = {
   SIGNUP_CODE_REQUIRED:
     "This meet needs a signup code. It's printed on the flyer — ask your coach or the timing tent.",
   GENDER_INVALID: "Pick Boys or Girls so we can score you in the right competition.",
+  GRADE_NOT_ALLOWED:
+    "That grade isn't offered for this division — pick one from the Grade list, and if it's wrong ask at the timing tent.",
+  GRADE_INVALID: "Grade should be a number like 8 or 11 — or leave it blank.",
 };
 
 function messageFor(raw: string | undefined, fallback: string): string {
@@ -148,6 +154,18 @@ watchEffect(async () => {
 const selectedDivision = computed(
   () => meet.value?.divisions.find((d) => d.id === raceId.value) ?? null,
 );
+
+/** Each division lists the grades it accepts; the organizer picks them on the race setup page. */
+const gradeOptions = computed<string[]>(() => {
+  const raw = selectedDivision.value?.allowed_grades;
+  const list = raw && raw.length ? [...raw] : [...DEFAULT_GRADES];
+  return list.sort((a, b) => a - b).map(String);
+});
+
+// Switching to a division that doesn't offer the current grade shouldn't leave it stuck.
+watch(gradeOptions, (options) => {
+  if (grade.value && !options.includes(grade.value)) grade.value = "";
+});
 
 function divisionLabel(d: Division): string {
   if (d.registration_open === false) return `${d.name} — registration closed`;
@@ -427,7 +445,7 @@ async function copyCode() {
               class="mt-1.5 w-full rounded-xl border border-ink-700 bg-ink-950 px-4 py-3 text-base focus:border-brand-400 focus:outline-none"
             >
               <option value="">—</option>
-              <option v-for="g in GRADES" :key="g" :value="g">{{ g }}</option>
+              <option v-for="g in gradeOptions" :key="g" :value="g">{{ g }}</option>
             </select>
           </label>
         </div>
