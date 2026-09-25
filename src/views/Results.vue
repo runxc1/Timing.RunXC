@@ -6,6 +6,7 @@ import { useSession } from "../stores/session";
 import { formatCode, normalizeCode } from "../lib/codes";
 import { formatClock } from "../lib/time";
 import { computeIndividualResults } from "../lib/scoring";
+import { csvFilenamePart, downloadCsv } from "../lib/csv";
 
 interface Division {
   id: string;
@@ -319,31 +320,12 @@ async function copyRegisterLink() {
   }
 }
 
-function csvCell(v: string | number | null | undefined): string {
-  const s = v == null ? "" : String(v);
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
-
-function download(filename: string, rows: Array<Array<string | number | null>>) {
-  const csv = rows.map((r) => r.map(csvCell).join(",")).join("\r\n");
-  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-function slug(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "results";
-}
-
 function baseName(kind: string): string {
-  return `${slug(meet.value?.name ?? "meet")}-${slug(race.value?.name ?? "division")}-${kind}.csv`;
+  return `${csvFilenamePart(meet.value?.name ?? "meet", "meet")}-${csvFilenamePart(race.value?.name ?? "division", "division")}-${kind}.csv`;
 }
 
 function exportIndividual() {
-  download(baseName("individual"), [
+  downloadCsv(baseName("individual"), [
     ["Place", "Runner", "School", "Grade", "Code", "Time", "Status"],
     ...individual.value.map((r) => [
       r.place,
@@ -358,7 +340,7 @@ function exportIndividual() {
 }
 
 function exportStandings() {
-  download(baseName("team"), [
+  downloadCsv(baseName("team"), [
     ["Rank", "School", "Score", "Tiebreak", "Finishers"],
     ...standings.value.map((t) => [t.rank, t.school_name, t.score, t.tiebreak, t.finishers]),
   ]);

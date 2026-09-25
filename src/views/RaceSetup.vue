@@ -5,6 +5,7 @@ import { makeClient } from "../lib/supabase";
 import { useSession } from "../stores/session";
 import { formatCode, genAthleteCode, normalizeCode } from "../lib/codes";
 import { isoToLocalInput, toIsoOrNull } from "../lib/time";
+import { csvFilenamePart, downloadCsv } from "../lib/csv";
 import DateTimeField from "../components/DateTimeField.vue";
 
 const route = useRoute();
@@ -109,6 +110,21 @@ const schoolName = (id: string | null) =>
 
 const registered = computed(() => athletes.value.filter((a) => a.name));
 const pool = computed(() => athletes.value.filter((a) => !a.name));
+
+function exportRegistered() {
+  if (!race.value || registered.value.length === 0) return;
+  const filename = `${csvFilenamePart(meet.value?.name ?? "meet", "meet")}-${csvFilenamePart(race.value.name, "race")}-registered-athletes.csv`;
+  downloadCsv(filename, [
+    ["Athlete Code", "Name", "School", "Grade", "Gender"],
+    ...registered.value.map((athlete) => [
+      athlete.code,
+      athlete.name,
+      athlete.school_id ? schools.value.find((s) => s.id === athlete.school_id)?.name ?? "" : "",
+      athlete.grade,
+      athlete.gender,
+    ]),
+  ]);
+}
 
 /** Grades 1–16 are legal; a division picks which of them its registrants may use. */
 const GRADE_RANGE = Array.from({ length: 16 }, (_, i) => i + 1);
@@ -634,7 +650,17 @@ function copyLink(text: string, key: string) {
 
       <!-- Roster -->
       <section class="mt-4 rounded-2xl border border-ink-800 bg-ink-900 p-5">
-        <h2 class="font-bold">Registered athletes <span class="text-slate-500">({{ registered.length }})</span></h2>
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <h2 class="font-bold">Registered athletes <span class="text-slate-500">({{ registered.length }})</span></h2>
+          <button
+            type="button"
+            class="rounded-xl border border-ink-700 px-3 py-2 text-xs font-bold text-slate-200 hover:bg-ink-800 disabled:cursor-not-allowed disabled:opacity-40"
+            :disabled="registered.length === 0"
+            @click="exportRegistered"
+          >
+            Export CSV
+          </button>
+        </div>
         <p v-if="editNote" class="mt-1 text-xs text-emerald-300">{{ editNote }}</p>
         <ul class="mt-3 divide-y divide-ink-800">
           <li v-for="a in registered" :key="a.id" class="flex items-center gap-3 py-2 text-sm">
