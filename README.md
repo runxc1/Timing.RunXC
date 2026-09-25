@@ -15,6 +15,11 @@ free tier. No custom server.
   6-character race code for registration, timing, and results links.
 - **Self-service registration** — athletes at `…/meet/<CODE>/signup` enter name, school
   (dropdown) and grade. Optionally pre-assign codes and print QR stickers.
+- **Registration corrections** — on `/admin/races/<id>`, an admin can edit a runner's
+  name, code, school, grade, gender, or race within the same meet. Moving to a
+  race with different grades requires an allowed grade or an explicitly blank
+  grade. A runner with a recorded finish cannot switch races until their finish
+  is corrected; moving a registration never transfers a finish time.
 - **QR sticker sheets** — client-side QR generation, print-ready sheet
   (`…/admin/races/<id>/stickers`), one sticker per athlete code.
 - **Finish-line console** (`…/t/<CODE>`) — big START button, then one big FINISH tap

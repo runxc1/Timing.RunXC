@@ -85,6 +85,8 @@ const ERROR_MESSAGES: Record<string, string> = {
   GRADE_NOT_ALLOWED:
     "That grade isn't offered for this division — pick one from the Grade list, and if it's wrong ask at the timing tent.",
   GRADE_INVALID: "Grade should be a number like 8 or 11 — or leave it blank.",
+  FINISH_ALREADY_RECORDED:
+    "This code already has a finish in another race. Ask the meet admin to correct the finish before changing races.",
 };
 
 function messageFor(raw: string | undefined, fallback: string): string {

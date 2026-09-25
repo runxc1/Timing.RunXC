@@ -44,6 +44,8 @@ const athletes = ref<
   }>
 >([]);
 const schools = ref<Array<{ id: string; name: string }>>([]);
+type Division = { id: string; name: string; status: string; allowed_grades: number[] };
+const divisions = ref<Division[]>([]);
 const error = ref("");
 const saving = ref(false);
 const savedFlash = ref(false);
@@ -54,6 +56,7 @@ const signup = computed(() => makeClient({ signupCode: meet.value?.signup_code ?
 
 async function load() {
   if (!session.meetAdminCode) return;
+  error.value = "";
   const { data, error: err } = await admin.value
     .from("races")
     .select("id, meet_id, name, status, scheduled_start, team_size, tiebreak_depth, registration_closed_at, allowed_grades")
@@ -76,7 +79,7 @@ async function load() {
   meet.value = (m.data as typeof meet.value) ?? null;
   if (meet.value?.code) session.rememberMeet(meet.value.code);
 
-  const [a, s] = await Promise.all([
+  const [a, s, d] = await Promise.all([
     admin.value
       .from("athletes")
       .select("id, code, name, grade, gender, school_id, source")
@@ -84,9 +87,19 @@ async function load() {
       .order("code"),
     // Only this meet's schools — otherwise the dropdown is every meet on the server.
     admin.value.from("schools").select("id, name").eq("meet_id", data.meet_id).order("name"),
+    admin.value
+      .from("races")
+      .select("id, name, status, allowed_grades")
+      .eq("meet_id", data.meet_id)
+      .order("name"),
   ]);
+  if (a.error || s.error || d.error) {
+    error.value = a.error?.message ?? s.error?.message ?? d.error?.message ?? "Couldn't load this race.";
+    return;
+  }
   athletes.value = (a.data ?? []) as typeof athletes.value;
   schools.value = (s.data ?? []) as typeof schools.value;
+  divisions.value = d.data ?? [];
 }
 
 watch([raceId, () => session.meetAdminCode], load, { immediate: true });
@@ -140,17 +153,19 @@ const gradeSummary = computed(() => {
 
 async function save() {
   if (!race.value || saving.value) return;
+  const currentRace = race.value;
+  const savedGrades = [...(currentRace.allowed_grades ?? DEFAULT_GRADES)].sort((a, b) => a - b);
   saving.value = true;
   const { data, error: err } = await admin.value
     .from("races")
     .update({
-      name: race.value.name,
-      team_size: race.value.team_size,
-      tiebreak_depth: race.value.tiebreak_depth,
-      scheduled_start: race.value.scheduled_start,
-      allowed_grades: [...(race.value.allowed_grades ?? DEFAULT_GRADES)].sort((a, b) => a - b),
+      name: currentRace.name,
+      team_size: currentRace.team_size,
+      tiebreak_depth: currentRace.tiebreak_depth,
+      scheduled_start: currentRace.scheduled_start,
+      allowed_grades: savedGrades,
     })
-    .eq("id", race.value.id)
+    .eq("id", currentRace.id)
     .select("id");
   saving.value = false;
   if (err) error.value = err.message;
@@ -158,6 +173,8 @@ async function save() {
     // RLS silently skips rows this browser's admin code can't touch.
     error.value = "Nothing was saved — the admin code in this browser isn't for this meet. Re-enter it from the meet page.";
   } else {
+    const division = divisions.value.find((d) => d.id === currentRace.id);
+    if (division) division.allowed_grades = savedGrades;
     savedFlash.value = true;
     setTimeout(() => (savedFlash.value = false), 1500);
   }
@@ -226,6 +243,8 @@ const edit = ref<{
   name: string;
   code: string;
   startCode: string;
+  raceId: string;
+  startRaceId: string;
   schoolId: string;
   grade: string;
   gender: "" | "M" | "F";
@@ -234,14 +253,21 @@ const editError = ref("");
 const editBusy = ref(false);
 const editNote = ref("");
 
-/** Signup only offers the grades this division opened, so corrections use the same list. */
+const editDivision = computed(() => divisions.value.find((d) => d.id === edit.value?.raceId));
 const gradeChoices = computed(() =>
-  [...(race.value?.allowed_grades ?? DEFAULT_GRADES)].sort((a, b) => a - b).map(String),
+  [...(editDivision.value?.allowed_grades ?? [])].sort((a, b) => a - b).map(String),
+);
+const gradeNotOffered = computed(
+  () => !!edit.value?.grade && !!editDivision.value && !gradeChoices.value.includes(edit.value.grade),
 );
 
 const EDIT_ERRORS: Record<string, string> = {
   ATHLETE_NOT_FOUND: "That registration is gone — reload the page.",
   NOT_ALLOWED: "The admin code in this browser isn't for this meet, so nothing was changed.",
+  DESTINATION_RACE_INVALID: "Choose another race from this meet.",
+  RACE_CHANGED: "Another admin already moved this runner. Reload this page before editing again.",
+  FINISH_ALREADY_RECORDED:
+    "This runner already has a finish in the original race. Correct that finish before moving the registration.",
   NAME_REQUIRED: "Enter the runner's name.",
   CODE_INVALID: "Athlete codes use letters and numbers only.",
   CODE_LENGTH: "Athlete codes are up to 8 characters.",
@@ -260,11 +286,18 @@ function editMessageFor(msg: string): string {
 type RosterRow = typeof athletes.value[number];
 
 function startEdit(a: RosterRow) {
+  const currentRace = race.value;
+  if (!currentRace || !divisions.value.some((d) => d.id === currentRace.id)) {
+    error.value = "Couldn't load this meet's races. Reload the page before editing.";
+    return;
+  }
   edit.value = {
     id: a.id,
     name: a.name ?? "",
     code: a.code,
     startCode: a.code,
+    raceId: currentRace.id,
+    startRaceId: currentRace.id,
     schoolId: a.school_id ?? "",
     grade: a.grade ?? "",
     gender: (a.gender === "M" || a.gender === "F" ? a.gender : "") as "" | "M" | "F",
@@ -281,6 +314,14 @@ async function saveEdit() {
   const form = edit.value;
   if (!form || editBusy.value) return;
   editError.value = "";
+  if (!editDivision.value) {
+    editError.value = EDIT_ERRORS.DESTINATION_RACE_INVALID;
+    return;
+  }
+  if (gradeNotOffered.value) {
+    editError.value = "Choose a grade offered by this race, or clear the grade using —.";
+    return;
+  }
   const code = normalizeCode(form.code);
   if (!form.name.trim()) {
     editError.value = EDIT_ERRORS.NAME_REQUIRED;
@@ -298,6 +339,8 @@ async function saveEdit() {
   editBusy.value = true;
   const { data, error: err } = await admin.value.rpc("admin_update_athlete", {
     p_athlete_id: form.id,
+    p_race_id: form.raceId,
+    p_expected_race_id: form.startRaceId,
     p_name: form.name.trim(),
     p_school_id: form.schoolId || null,
     p_clear_school: !form.schoolId,
@@ -311,13 +354,20 @@ async function saveEdit() {
     return;
   }
 
-  const row = data as { finish_count?: number } | null;
+  const row = data as { finish_count: number; race_id: string; race_name: string } | null;
+  if (!row?.race_id || !row.race_name) {
+    editError.value = "Couldn't confirm the change. Reload the page before trying again.";
+    return;
+  }
+  const moved = row.race_id !== form.startRaceId;
   const renamed = code !== form.startCode;
-  const slots = Number(row?.finish_count ?? 0);
+  const slots = row.finish_count;
   editNote.value =
-    renamed && slots > 0
-      ? `Saved. ${slots} finish ${slots === 1 ? "record now sits" : "records now sit"} under ${code}.`
-      : "Saved.";
+    moved
+      ? `Moved ${form.name.trim()} to ${row.race_name}.`
+      : renamed && slots > 0
+        ? `Saved. ${slots} finish ${slots === 1 ? "record now sits" : "records now sit"} under ${code}.`
+        : "Saved.";
   edit.value = null;
   await load();
 }
@@ -615,9 +665,20 @@ function copyLink(text: string, key: string) {
             <button class="rounded px-2 py-1 text-sm font-bold text-slate-400 hover:bg-ink-700" @click="closeEdit()">×</button>
           </div>
           <p class="mt-1 text-sm text-slate-400">
-            Fix a mistyped name, school, grade or code. Finish records follow the runner, so
-            correcting a code keeps their place.
+            Fix a name, code, school, grade, gender or race. A recorded finish keeps
+            the runner in their original race until that finish is corrected.
           </p>
+
+          <label for="athlete-edit-race" class="mt-4 block text-xs font-bold uppercase tracking-wider text-slate-500">Race</label>
+          <select
+            id="athlete-edit-race"
+            v-model="edit.raceId"
+            class="mt-1 w-full rounded-xl border border-ink-700 bg-ink-950 px-4 py-2.5 text-sm focus:border-brand-400 focus:outline-none"
+          >
+            <option v-for="d in divisions" :key="d.id" :value="d.id">
+              {{ d.name }} ({{ d.status.replace("_", " ") }})
+            </option>
+          </select>
 
           <label class="mt-4 block text-xs font-bold uppercase tracking-wider text-slate-500">Name</label>
           <input
@@ -645,8 +706,14 @@ function copyLink(text: string, key: string) {
               <label class="block text-xs font-bold uppercase tracking-wider text-slate-500">Grade</label>
               <select v-model="edit.grade" class="mt-1 w-full rounded-xl border border-ink-700 bg-ink-950 px-4 py-2.5 text-sm focus:border-brand-400 focus:outline-none">
                 <option value="">—</option>
+                <option v-if="gradeNotOffered" :value="edit.grade" disabled>
+                  {{ edit.grade }} (not offered here)
+                </option>
                 <option v-for="g in gradeChoices" :key="g" :value="g">{{ g }}</option>
               </select>
+              <p v-if="gradeNotOffered" class="mt-1 text-xs text-amber-300">
+                Choose an offered grade or explicitly clear it.
+              </p>
             </div>
             <div>
               <span class="block text-xs font-bold uppercase tracking-wider text-slate-500">Gender</span>
